@@ -1,5 +1,6 @@
-import { useState, useMemo, useCallback, useRef } from "react";
+import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
+import * as db from "./supabase.js";
 
 // ═══════════════════════════════════════════════════════════════════
 // CONFIGURATION
@@ -395,6 +396,44 @@ export default function App() {
   const [priceHist, setPriceHist] = useState([]);
   const [tab, setTab] = useState("place_order");
   const [modal, setModal] = useState(null);
+  const [dbReady, setDbReady] = useState(false);
+  const [dbError, setDbError] = useState(null);
+
+  // ── Load data from Supabase on mount (falls back to SEED if offline) ──
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const [s, v, i, o, g, inv, cn, pay, ph] = await Promise.all([
+          db.fetchStaff(),
+          db.fetchVendors(),
+          db.fetchItems(),
+          db.fetchPurchaseOrders(),
+          db.fetchGRNs(),
+          db.fetchInvoices(),
+          db.fetchCreditNotes(),
+          db.fetchPayments(),
+          db.fetchPriceHistory(),
+        ]);
+        if (cancelled) return;
+        if (s.length > 0) setStaff(s);
+        if (v.length > 0) setVendors(v);
+        if (i.length > 0) setItems(i);
+        setOrders(o);
+        setGrns(g);
+        setInvoices(inv);
+        setCreditNotes(cn);
+        setPayments(pay);
+        setPriceHist(ph);
+        setDbReady(true);
+      } catch (err) {
+        console.warn("Supabase load failed, using SEED data:", err);
+        if (!cancelled) { setDbError(err.message); setDbReady(false); }
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, []);
 
   const vM = useMemo(() => Object.fromEntries(vendors.map(v=>[v.id,v])), [vendors]);
   const iM = useMemo(() => Object.fromEntries(items.map(i=>[i.id,i])), [items]);
@@ -439,6 +478,12 @@ export default function App() {
               <Btn onClick={()=>{if(pw===MANAGER_PASSWORD){setUser({id:"mgr",name:"Purchase Manager",role:"manager"});setTab("mgr_dashboard");setPw("");}else setPwErr("Wrong");}}>Go</Btn>
             </div>
             {pwErr && <p className="text-red-500 text-xs mt-1">{pwErr}</p>}
+          </div>
+          <div className="mt-4 pt-3 border-t text-center">
+            <span className={`inline-flex items-center gap-1.5 text-xs ${dbReady?"text-green-600":dbError?"text-red-500":"text-gray-400"}`}>
+              <span className={`w-2 h-2 rounded-full ${dbReady?"bg-green-500":dbError?"bg-red-400":"bg-gray-300 animate-pulse"}`}/>
+              {dbReady?"Connected to Supabase":dbError?"Offline — using local data":"Connecting..."}
+            </span>
           </div>
         </div>
       </div>
@@ -502,22 +547,23 @@ export default function App() {
       setLines(p=>[...p, {iid:item.id, name:item.name, unit:item.unit, qty:1, vid:pv?.id||"", vname:pv?.name||"", delDate:addD(td(),1), notes:"", gst:item.gst, hsn:item.hsn}]);
     };
 
-    const submit = () => {
+    const submit = async () => {
       if(lines.length===0) return;
       const byVendor = {};
       lines.forEach(l => { const vid = l.vid || "unknown"; if(!byVendor[vid]) byVendor[vid]=[]; byVendor[vid].push(l); });
 
-      Object.entries(byVendor).forEach(([vid, vLines]) => {
-        // Check for existing draft PO for same vendor on same date
+      for (const [vid, vLines] of Object.entries(byVendor)) {
         const existingDraft = orders.find(o => o.vid === vid && o.date === td() && o.status === "draft");
         if (existingDraft) {
-          // Append items to existing draft PO
           setOrders(p => p.map(o => o.id === existingDraft.id ? {...o, lines: [...o.lines, ...vLines]} : o));
         } else {
           const num = genNum("PO", td(), orders);
-          setOrders(p=>[...p, {id:uid(), num, date:td(), by:user.name, status:"draft", vid, lines:vLines, total:0}]);
+          const newPO = {id:uid(), num, date:td(), by:user.name, status:"draft", vid, lines:vLines, total:0};
+          setOrders(p=>[...p, newPO]);
+          // Persist to Supabase
+          try { await db.createPurchaseOrder(newPO, user.id); } catch(e) { console.warn("DB write PO failed:", e); }
         }
-      });
+      }
       setLines([]); setSearch(""); setActiveCat("");
     };
 
@@ -560,7 +606,7 @@ export default function App() {
 
         {lines.length > 0 && (
           <div className="bg-white rounded-xl border overflow-x-auto">
-            <table className="w-full text-xs">
+            <table className="w-full text-xs min-w-[600px]">
               <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">Item</th><th className="px-3 py-2 w-24">Qty</th><th className="px-3 py-2 w-20">Unit</th><th className="px-3 py-2">Vendor</th><th className="px-3 py-2 w-28">Delivery</th><th className="px-3 py-2">Notes</th><th className="w-8"></th></tr></thead>
               <tbody>
                 {lines.map((l,i)=>(
@@ -615,13 +661,15 @@ export default function App() {
                 </div>
                 <Btn v="outline" s onClick={()=>setModal({type:"receive",data:po})} disabled={remaining.length===0}>{remaining.length>0?"Receive":"Fully Received"}</Btn>
               </div>
-              <table className="w-full text-xs">
+              <div className="overflow-x-auto">
+              <table className="w-full text-xs min-w-[600px]">
                 <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">Item</th><th className="px-3 py-2">Ordered</th><th className="px-3 py-2">Received</th><th className="px-3 py-2">Pending</th></tr></thead>
                 <tbody>{po.lines.map((l,i)=>{
                   const rec = alreadyReceived[l.iid]||0;
                   return <tr key={i} className="border-t"><td className="px-3 py-2 font-medium">{l.name}</td><td className="px-3 py-2 text-center">{l.qty}</td><td className="px-3 py-2 text-center text-green-600">{rec}</td><td className="px-3 py-2 text-center text-orange-600">{l.qty-rec}</td></tr>;
                 })}</tbody>
               </table>
+              </div>
             </div>
           );
         })}
@@ -672,16 +720,18 @@ export default function App() {
         </div>
         <div className="flex justify-end gap-2">
           <Btn v="outline" onClick={()=>setModal(null)}>Cancel</Btn>
-          <Btn v="success" disabled={!signOff} onClick={()=>{
+          <Btn v="success" disabled={!signOff} onClick={async()=>{
             const disc = recL.some(l=>{const prev=alreadyReceived[l.iid]||0;return l.qtyRec!==(l.qty-prev);});
             const grnNum = genNum("GRN", td(), grns);
-            setGrns(p=>[...p, {id:uid(), grnNum, poId:po.id, poNum:po.num, vid:po.vid, date:td(), signOff, hasDisc:disc, vendorInvNum:"", notes, lines:recL}]);
-            // Check if all items fully received now
+            const newGrn = {id:uid(), grnNum, poId:po.id, poNum:po.num, vid:po.vid, date:td(), signOff, hasDisc:disc, vendorInvNum:"", notes, lines:recL};
+            setGrns(p=>[...p, newGrn]);
             const newAlready = {...alreadyReceived};
             recL.forEach(l => { newAlready[l.iid] = (newAlready[l.iid]||0) + l.qtyRec; });
             const allDone = po.lines.every(l => (newAlready[l.iid]||0) >= l.qty);
-            setOrders(p=>p.map(o=>o.id===po.id?{...o,status:allDone?"received":"partially_received"}:o));
+            const newStatus = allDone?"received":"partially_received";
+            setOrders(p=>p.map(o=>o.id===po.id?{...o,status:newStatus}:o));
             setModal(null);
+            try { await db.createGRN(newGrn); await db.updatePOStatus(po.id, newStatus); } catch(e) { console.warn("DB write GRN failed:", e); }
           }}>Confirm GRN</Btn>
         </div>
       </Modal>
@@ -739,22 +789,24 @@ export default function App() {
                 <option value="manager">Manager</option>
               </select>
               {editId && <Btn v="ghost" s onClick={clearEdit}>Cancel</Btn>}
-              <Btn disabled={!nE.name.trim()} s onClick={()=>{
-                if(editId){setStaff(p=>p.map(s=>s.id===editId?{...s,name:nE.name.trim(),role:nE.role}:s));
-                }else{setStaff(p=>[...p,{id:uid(),name:nE.name.trim(),role:nE.role}]);}
+              <Btn disabled={!nE.name.trim()} s onClick={async()=>{
+                const staffObj = {id:editId||uid(),name:nE.name.trim(),role:nE.role};
+                if(editId){setStaff(p=>p.map(s=>s.id===editId?{...s,...staffObj}:s));
+                }else{setStaff(p=>[...p,staffObj]);}
                 clearEdit();
+                try { await db.upsertStaff(staffObj); } catch(e) { console.warn("DB staff save failed:", e); }
               }}>{editId?"Save":"+ Add"}</Btn>
             </div>
           </div>
-          <div className="bg-white rounded-xl border overflow-hidden">
-            <table className="w-full text-xs">
+          <div className="bg-white rounded-xl border overflow-x-auto">
+            <table className="w-full text-xs min-w-[600px]">
               <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">Name</th><th className="px-3 py-2">Role</th><th className="w-24"></th></tr></thead>
               <tbody>{filteredStaff.map(s=>(<tr key={s.id} className="border-t hover:bg-gray-50">
                 <td className="px-3 py-2 font-medium">{s.name}</td>
                 <td className="px-3 py-2 text-center"><Badge t={s.role==="manager"?"Manager":"Staff"} c={s.role==="manager"?"purple":"blue"}/></td>
                 <td className="px-3 py-2 flex gap-2 justify-end">
                   <button onClick={()=>{setEditId(s.id);setNE({name:s.name,role:s.role});}} className="text-orange-500 text-xs">Edit</button>
-                  <button onClick={()=>setStaff(p=>p.filter(x=>x.id!==s.id))} className="text-red-400 text-xs">Del</button>
+                  <button onClick={async()=>{setStaff(p=>p.filter(x=>x.id!==s.id)); try{await db.deleteStaff(s.id);}catch(e){console.warn("DB staff delete failed:",e);}}} className="text-red-400 text-xs">Del</button>
                 </td>
               </tr>))}</tbody>
             </table>
@@ -773,13 +825,13 @@ export default function App() {
             </div>
             <div className="flex justify-end gap-2 mt-2">
               {editId && <Btn v="ghost" s onClick={clearEdit}>Cancel</Btn>}
-              <Btn disabled={!nI.name} s onClick={()=>{if(editId){setItems(p=>p.map(i=>i.id===editId?{...nI,id:editId}:i));setEditId(null);}else{setItems(p=>[...p,{...nI,id:uid()}]);}setNI({name:"",unit:"kg",hsn:"",gst:0,vid:""});}}>{editId?"Save":"+ Add"}</Btn>
+              <Btn disabled={!nI.name} s onClick={async()=>{const itemObj={...nI,id:editId||uid()};if(editId){setItems(p=>p.map(i=>i.id===editId?itemObj:i));setEditId(null);}else{setItems(p=>[...p,itemObj]);}setNI({name:"",unit:"kg",hsn:"",gst:0,vid:""});try{await db.upsertItem(itemObj);}catch(e){console.warn("DB item save failed:",e);}}}>{editId?"Save":"+ Add"}</Btn>
             </div>
           </div>
-          <div className="bg-white rounded-xl border overflow-hidden">
-            <table className="w-full text-xs">
+          <div className="bg-white rounded-xl border overflow-x-auto">
+            <table className="w-full text-xs min-w-[600px]">
               <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">Item</th><th className="px-3 py-2">Unit</th><th className="px-3 py-2">HSN</th><th className="px-3 py-2">GST</th><th className="px-3 py-2">Vendor</th><th className="w-20"></th></tr></thead>
-              <tbody>{filteredItems.map(it=>(<tr key={it.id} className="border-t hover:bg-gray-50"><td className="px-3 py-2 font-medium">{it.name}</td><td className="px-3 py-2 text-center text-gray-500">{it.unit}</td><td className="px-3 py-2 text-center text-gray-400">{it.hsn||"—"}</td><td className="px-3 py-2 text-center">{it.gst}%</td><td className="px-3 py-2 text-gray-500">{vM[it.vid]?.name||"—"}</td><td className="px-3 py-2 flex gap-2"><button onClick={()=>{setEditId(it.id);setNI({name:it.name,unit:it.unit,hsn:it.hsn,gst:it.gst,vid:it.vid||""});}} className="text-orange-500 text-xs">Edit</button><button onClick={()=>setItems(p=>p.filter(x=>x.id!==it.id))} className="text-red-400 text-xs">Del</button></td></tr>))}</tbody>
+              <tbody>{filteredItems.map(it=>(<tr key={it.id} className="border-t hover:bg-gray-50"><td className="px-3 py-2 font-medium">{it.name}</td><td className="px-3 py-2 text-center text-gray-500">{it.unit}</td><td className="px-3 py-2 text-center text-gray-400">{it.hsn||"—"}</td><td className="px-3 py-2 text-center">{it.gst}%</td><td className="px-3 py-2 text-gray-500">{vM[it.vid]?.name||"—"}</td><td className="px-3 py-2 flex gap-2"><button onClick={()=>{setEditId(it.id);setNI({name:it.name,unit:it.unit,hsn:it.hsn,gst:it.gst,vid:it.vid||""});}} className="text-orange-500 text-xs">Edit</button><button onClick={async()=>{setItems(p=>p.filter(x=>x.id!==it.id));try{await db.deleteItem(it.id);}catch(e){console.warn("DB item delete failed:",e);}}} className="text-red-400 text-xs">Del</button></td></tr>))}</tbody>
             </table>
           </div>
         </>)}
@@ -801,13 +853,13 @@ export default function App() {
             </div>
             <div className="flex justify-end gap-2 mt-2">
               {editId && <Btn v="ghost" s onClick={clearEdit}>Cancel</Btn>}
-              <Btn disabled={!nV.name} s onClick={()=>{if(editId){setVendors(p=>p.map(v=>v.id===editId?{...nV,id:editId}:v));setEditId(null);}else{setVendors(p=>[...p,{...nV,id:uid()}]);}setNV({name:"",contact:"",phone:"",gstin:"",state:"Maharashtra",intra:true,terms:30,category:""});}}>{editId?"Save":"+ Add"}</Btn>
+              <Btn disabled={!nV.name} s onClick={async()=>{const vObj={...nV,id:editId||uid()};if(editId){setVendors(p=>p.map(v=>v.id===editId?vObj:v));setEditId(null);}else{setVendors(p=>[...p,vObj]);}setNV({name:"",contact:"",phone:"",gstin:"",state:"Maharashtra",intra:true,terms:30,category:""});try{await db.upsertVendor(vObj);}catch(e){console.warn("DB vendor save failed:",e);}}}>{editId?"Save":"+ Add"}</Btn>
             </div>
           </div>
-          <div className="bg-white rounded-xl border overflow-hidden">
-            <table className="w-full text-xs">
+          <div className="bg-white rounded-xl border overflow-x-auto">
+            <table className="w-full text-xs min-w-[600px]">
               <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">Vendor</th><th className="px-3 py-2">Contact</th><th className="px-3 py-2">GSTIN</th><th className="px-3 py-2">Terms</th><th className="px-3 py-2">Tax</th><th className="w-20"></th></tr></thead>
-              <tbody>{filteredVendors.map(v=>(<tr key={v.id} className="border-t hover:bg-gray-50"><td className="px-3 py-2 font-medium">{v.name}</td><td className="px-3 py-2 text-gray-500">{v.contact} {v.phone}</td><td className="px-3 py-2 font-mono text-gray-400">{v.gstin}</td><td className="px-3 py-2 text-center">Net {v.terms}</td><td className="px-3 py-2 text-center"><Badge t={v.intra?"CGST+SGST":"IGST"} c={v.intra?"blue":"purple"}/></td><td className="px-3 py-2 flex gap-2"><button onClick={()=>{setEditId(v.id);setNV({name:v.name,contact:v.contact,phone:v.phone,gstin:v.gstin,state:v.state,intra:v.intra,terms:v.terms,category:v.category||""});setView("vendors");}} className="text-orange-500 text-xs">Edit</button><button onClick={()=>setVendors(p=>p.filter(x=>x.id!==v.id))} className="text-red-400 text-xs">Del</button></td></tr>))}</tbody>
+              <tbody>{filteredVendors.map(v=>(<tr key={v.id} className="border-t hover:bg-gray-50"><td className="px-3 py-2 font-medium">{v.name}</td><td className="px-3 py-2 text-gray-500">{v.contact} {v.phone}</td><td className="px-3 py-2 font-mono text-gray-400">{v.gstin}</td><td className="px-3 py-2 text-center">Net {v.terms}</td><td className="px-3 py-2 text-center"><Badge t={v.intra?"CGST+SGST":"IGST"} c={v.intra?"blue":"purple"}/></td><td className="px-3 py-2 flex gap-2"><button onClick={()=>{setEditId(v.id);setNV({name:v.name,contact:v.contact,phone:v.phone,gstin:v.gstin,state:v.state,intra:v.intra,terms:v.terms,category:v.category||""});setView("vendors");}} className="text-orange-500 text-xs">Edit</button><button onClick={async()=>{setVendors(p=>p.filter(x=>x.id!==v.id));try{await db.deleteVendor(v.id);}catch(e){console.warn("DB vendor delete failed:",e);}}} className="text-red-400 text-xs">Del</button></td></tr>))}</tbody>
             </table>
           </div>
         </>)}
@@ -886,14 +938,16 @@ export default function App() {
                   <div className="flex-1"/>
                   {o.status==="draft" && <>
                     <Btn v="outline" s onClick={()=>setModal({type:"editPO",data:o})}>Edit</Btn>
-                    <Btn v="primary" s onClick={()=>{setOrders(p=>p.map(x=>x.id===o.id?{...x,status:"sent_to_vendor"}:x));}}>✓ Mark Sent</Btn>
+                    <Btn v="primary" s onClick={async()=>{setOrders(p=>p.map(x=>x.id===o.id?{...x,status:"sent_to_vendor"}:x));try{await db.updatePOStatus(o.id,"sent_to_vendor");}catch(e){console.warn("DB PO status failed:",e);}}}>✓ Mark Sent</Btn>
                   </>}
                   <Btn v="ghost" s onClick={()=>printPO(o)}>PDF</Btn>
                 </div>
-                <table className="w-full text-xs">
-                  <thead className="bg-gray-50"><tr><th className="text-left px-3 py-1">Item</th><th className="px-3 py-1">Qty</th><th className="px-3 py-1">Unit</th><th className="px-3 py-1">Delivery</th><th className="px-3 py-1">Notes</th></tr></thead>
-                  <tbody>{o.lines.map((l,i)=><tr key={i} className="border-t"><td className="px-3 py-1 font-medium">{l.name}</td><td className="px-3 py-1 text-center">{l.qty}</td><td className="px-3 py-1 text-center text-gray-500">{l.unit}</td><td className="px-3 py-1 text-gray-500">{fmt(l.delDate)}</td><td className="px-3 py-1 text-gray-400">{l.notes||"—"}</td></tr>)}</tbody>
+                <div className="overflow-x-auto">
+                <table className="w-full text-xs min-w-[600px]">
+                  <thead className="bg-gray-50"><tr><th className="text-left px-3 py-1">Item</th><th className="px-3 py-1">Qty</th><th className="px-3 py-1">Unit</th><th className="px-3 py-1">Vendor</th><th className="px-3 py-1">Delivery</th><th className="px-3 py-1">Notes</th></tr></thead>
+                  <tbody>{o.lines.map((l,i)=><tr key={i} className="border-t"><td className="px-3 py-1 font-medium">{l.name}</td><td className="px-3 py-1 text-center">{l.qty}</td><td className="px-3 py-1 text-center text-gray-500">{l.unit}</td><td className="px-3 py-1">{l.vid && l.vid !== "unknown" ? vM[l.vid]?.name : <select className="w-full border rounded px-1 py-1 text-xs" value={l.vid||""} onChange={e=>{const vid=e.target.value;const vname=vendors.find(v=>v.id===vid)?.name||"";setOrders(p=>p.map(x=>x.id===o.id?{...x,lines:x.lines.map((ll,j)=>j===i?{...ll,vid,vname}:ll)}:x));}}><option value="">Select...</option>{vendors.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select>}</td><td className="px-3 py-1 text-gray-500">{fmt(l.delDate)}</td><td className="px-3 py-1 text-gray-400">{l.notes||"—"}</td></tr>)}</tbody>
                 </table>
+                </div>
               </div>
             ))}
           </div>
@@ -910,7 +964,8 @@ export default function App() {
     const up = (i,f,v) => { const n=[...lines]; n[i]={...n[i],[f]:v}; setLines(n); };
     return (
       <Modal title={`Edit ${po.num}`} wide onClose={()=>setModal(null)}>
-        <table className="w-full text-xs mb-3">
+        <div className="overflow-x-auto mb-3">
+        <table className="w-full text-xs min-w-[600px]">
           <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">Item</th><th className="px-3 py-2 w-24">Qty</th><th className="px-3 py-2 w-20">Unit</th><th className="px-3 py-2 w-28">Delivery</th><th className="px-3 py-2">Notes</th><th className="w-8"></th></tr></thead>
           <tbody>{lines.map((l,i)=>(
             <tr key={i} className="border-t">
@@ -923,8 +978,9 @@ export default function App() {
             </tr>
           ))}</tbody>
         </table>
+        </div>
         <div className="flex justify-end gap-2">
-          <Btn v="danger" s onClick={()=>{setOrders(p=>p.map(o=>o.id===po.id?{...o,status:"cancelled"}:o));setModal(null);}}>Cancel PO</Btn>
+          <Btn v="danger" s onClick={async()=>{setOrders(p=>p.map(o=>o.id===po.id?{...o,status:"cancelled"}:o));setModal(null);try{await db.updatePOStatus(po.id,"cancelled");}catch(e){console.warn("DB cancel PO failed:",e);}}}>Cancel PO</Btn>
           <Btn v="outline" onClick={()=>setModal(null)}>Close</Btn>
           <Btn onClick={()=>{setOrders(p=>p.map(o=>o.id===po.id?{...o,lines}:o));setModal(null);}}>Save Changes</Btn>
         </div>
@@ -956,16 +1012,18 @@ export default function App() {
                   </div>
                   <div className="flex items-center gap-2 mb-2 bg-blue-50 rounded-lg px-3 py-2">
                     <span className="text-xs font-medium text-blue-700">Vendor Invoice #:</span>
-                    <InlineEdit className="border border-blue-200 rounded-lg px-3 py-1.5 text-sm flex-1 max-w-xs focus:outline-none focus:ring-2 focus:ring-blue-300" placeholder="Enter vendor bill/invoice number" value={g.vendorInvNum||""} onChange={val=>{setGrns(p=>p.map(x=>x.id===g.id?{...x,vendorInvNum:val}:x));}}/>
+                    <InlineEdit className="border border-blue-200 rounded-lg px-3 py-1.5 text-sm flex-1 max-w-xs focus:outline-none focus:ring-2 focus:ring-blue-300" placeholder="Enter vendor bill/invoice number" value={g.vendorInvNum||""} onChange={val=>{setGrns(p=>p.map(x=>x.id===g.id?{...x,vendorInvNum:val}:x));db.updateGRNVendorInvoice(g.id,val).catch(e=>console.warn("DB vendor inv# failed:",e));}}/>
                     {g.vendorInvNum && <Badge t="Mapped" c="green"/>}
                   </div>
-                  <table className="w-full text-xs">
+                  <div className="overflow-x-auto">
+                  <table className="w-full text-xs min-w-[600px]">
                     <thead className="bg-gray-50"><tr><th className="text-left px-3 py-1">Item</th><th className="px-3 py-1">Ordered</th><th className="px-3 py-1">Received</th><th className="px-3 py-1">Unit</th><th className="px-3 py-1">Discrepancy</th></tr></thead>
                     <tbody>{g.lines.map((l,i)=>{
                       const diff = l.qtyRec !== l.qty;
                       return <tr key={i} className={`border-t ${diff?"bg-amber-50":""}`}><td className="px-3 py-1 font-medium">{l.name}</td><td className="px-3 py-1 text-center">{l.qty}</td><td className="px-3 py-1 text-center">{l.qtyRec}</td><td className="px-3 py-1 text-center text-gray-500">{l.unit}</td><td className="px-3 py-1 text-gray-500">{diff?(l.discReason||"—"):"—"}</td></tr>;
                     })}</tbody>
                   </table>
+                  </div>
                 </div>
               );
             })}
@@ -991,7 +1049,8 @@ export default function App() {
     return (
       <Modal title={`Credit Note for ${grn.grnNum}`} wide onClose={()=>setModal(null)}>
         <p className="text-sm text-gray-500 mb-3">{v?.name} • Vendor Invoice: {grn.vendorInvNum||"N/A"}</p>
-        <table className="w-full text-xs mb-3">
+        <div className="overflow-x-auto mb-3">
+        <table className="w-full text-xs min-w-[600px]">
           <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">Item</th><th className="px-3 py-2">Received</th><th className="px-3 py-2 w-24">Return Qty</th><th className="px-3 py-2">Price</th><th className="px-3 py-2">Credit Amt</th><th className="text-left px-3 py-2">Reason</th></tr></thead>
           <tbody>{cnLines.map((l,i)=>{
             const price = inv?.lines?.find(il=>il.iid===l.iid)?.price || 0;
@@ -1008,13 +1067,14 @@ export default function App() {
             );
           })}</tbody>
         </table>
+        </div>
         <div className="mb-3">
           <label className="text-xs text-gray-500">Overall Reason</label>
           <input className="w-full border rounded-lg px-3 py-2 text-sm" placeholder="e.g. Quality issue discovered after receiving" value={cnReason} onChange={e=>setCnReason(e.target.value)}/>
         </div>
         <div className="flex justify-end gap-2">
           <Btn v="outline" onClick={()=>setModal(null)}>Cancel</Btn>
-          <Btn v="danger" disabled={!hasReturn||!cnReason} onClick={()=>{
+          <Btn v="danger" disabled={!hasReturn||!cnReason} onClick={async()=>{
             const returnLines = cnLines.filter(l=>l.returnQty>0);
             const baseTotal = returnLines.reduce((s,l)=>{
               const price = inv?.lines?.find(il=>il.iid===l.iid)?.price || 0;
@@ -1022,8 +1082,10 @@ export default function App() {
             }, 0);
             const gstCalc = calcGST(baseTotal, returnLines[0]?.gst||0, v?.intra);
             const cnNum = genNum("CN", td(), creditNotes);
-            setCreditNotes(p=>[...p, {id:uid(), num:cnNum, grnId:grn.id, grnNum:grn.grnNum, invId:inv?.id, vid:grn.vid, vname:v?.name, date:td(), reason:cnReason, base:baseTotal, cgst:gstCalc.cgst, sgst:gstCalc.sgst, igst:gstCalc.igst, totalGST:gstCalc.total, lines:returnLines}]);
+            const newCN = {id:uid(), num:cnNum, grnId:grn.id, grnNum:grn.grnNum, invId:inv?.id, vid:grn.vid, vname:v?.name, date:td(), reason:cnReason, base:baseTotal, cgst:gstCalc.cgst, sgst:gstCalc.sgst, igst:gstCalc.igst, totalGST:gstCalc.total, lines:returnLines};
+            setCreditNotes(p=>[...p, newCN]);
             setModal(null);
+            try { await db.createCreditNote(newCN); } catch(e) { console.warn("DB credit note failed:", e); }
           }}>Create Credit Note</Btn>
         </div>
       </Modal>
@@ -1066,12 +1128,19 @@ export default function App() {
     const grand = baseTotal + gstB.cgst + gstB.sgst + gstB.igst;
     const allPriced = pL.every(l=>l.price>0||l.totalOverride>0);
 
-    const approve = () => {
+    const approve = async () => {
+      const priceEntries = pL.map(l=>({iid:l.iid,vid:grn.vid,name:l.name,vname:vendor?.name,price:l.price}));
       pL.forEach(l=>{setPriceHist(p=>[...p,{id:uid(),itemId:l.iid,vendorId:grn.vid,itemName:l.name,vendorName:vendor?.name,price:l.price,date:td()}]);});
       const invL = pL.map(l=>{const qty=l.qtyRec||l.qty;const lb=l.totalOverride!==null?l.totalOverride:qty*l.price;const g=calcGST(lb,l.gst,vendor?.intra);return{...l,qty,lineBase:lb,lineCgst:g.cgst,lineSgst:g.sgst,lineIgst:g.igst,lineTotal:g.total};});
       const invNum = genNum("INV", td(), invoices);
-      setInvoices(p=>[...p,{id:uid(),num:invNum,grnId:grn.id,grnNum:grn.grnNum,poNum:po?.num,vid:grn.vid,vname:vendor?.name,vgstin:vendor?.gstin,intra:vendor?.intra,date:td(),due:addD(td(),vendor?.terms||30),base:baseTotal,cgst:gstB.cgst,sgst:gstB.sgst,igst:gstB.igst,totalGST:grand,lines:invL,extra:extraAmt>0?{label:extraLabel,amt:extraAmt}:null,vendorInvNum}]);
+      const newInv = {id:uid(),num:invNum,grnId:grn.id,grnNum:grn.grnNum,poNum:po?.num,vid:grn.vid,vname:vendor?.name,vgstin:vendor?.gstin,intra:vendor?.intra,date:td(),due:addD(td(),vendor?.terms||30),base:baseTotal,cgst:gstB.cgst,sgst:gstB.sgst,igst:gstB.igst,totalGST:grand,lines:invL,extra:extraAmt>0?{label:extraLabel,amt:extraAmt}:null,vendorInvNum};
+      setInvoices(p=>[...p, newInv]);
       setOrders(p=>p.map(o=>o.id===grn.poId?{...o,status:"grn_done",total:grand}:o));
+      try {
+        await db.savePriceHistory(priceEntries);
+        await db.createInvoice(newInv);
+        await db.updatePOStatus(grn.poId, "grn_done");
+      } catch(e) { console.warn("DB pricing approve failed:", e); }
     };
 
     return (
@@ -1123,7 +1192,7 @@ export default function App() {
       </div>
       {invoices.length===0?<div className="bg-white rounded-xl border p-6 text-center text-gray-400 text-sm">No invoices</div>:(
         <div className="bg-white rounded-xl border overflow-x-auto">
-          <table className="w-full text-xs">
+          <table className="w-full text-xs min-w-[600px]">
             <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">Inv</th><th className="text-left px-3 py-2">GRN</th><th className="text-left px-3 py-2">Vendor</th><th className="px-3 py-2">Date</th><th className="text-right px-3 py-2">Base</th><th className="text-right px-3 py-2">GST</th><th className="text-right px-3 py-2">Total</th><th className="text-right px-3 py-2">Balance</th><th className="px-3 py-2">Due</th><th className="text-center px-3 py-2">Status</th><th className="w-10"></th></tr></thead>
             <tbody>{apData.slice().reverse().map(inv=>(
               <tr key={inv.id} className={`border-t hover:bg-gray-50 ${inv.overdue?"bg-red-50":""}`}>
@@ -1167,7 +1236,7 @@ export default function App() {
         </div>
         <div className="flex justify-end gap-2">
           <Btn v="outline" onClick={()=>setModal(null)}>Cancel</Btn>
-          <Btn v="success" disabled={!amt} onClick={()=>{setPayments(p=>[...p,{id:uid(),invId:inv.id,vid:inv.vid,amount:+amt,date:dt,method,ref:refNum}]);setModal(null);}}>Record</Btn>
+          <Btn v="success" disabled={!amt} onClick={async()=>{const newPay={id:uid(),invId:inv.id,vid:inv.vid,amount:+amt,date:dt,method,ref:refNum,by:user?.name||""};setPayments(p=>[...p,newPay]);setModal(null);try{await db.createPayment(newPay);}catch(e){console.warn("DB payment failed:",e);}}}>Record</Btn>
         </div>
       </Modal>
     );
@@ -1207,7 +1276,7 @@ export default function App() {
         <PeriodBar {...{dateFrom,dateTo,setDateFrom,setDateTo,period,setPeriod}}/>
         {expanded===null&&(
           <div className="bg-white rounded-xl border overflow-x-auto">
-            <table className="w-full text-xs">
+            <table className="w-full text-xs min-w-[600px]">
               <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">Vendor</th><th className="text-right px-3 py-2">Invoiced</th><th className="text-right px-3 py-2">Paid</th><th className="text-right px-3 py-2">Credit Notes</th><th className="text-right px-3 py-2">Balance</th><th className="px-3 py-2"></th></tr></thead>
               <tbody>{ledger.map(v=>(<tr key={v.id} className="border-t hover:bg-gray-50 cursor-pointer" onDoubleClick={()=>setExpanded(v.id)}><td className="px-3 py-2 font-medium">{v.name}</td><td className="px-3 py-2 text-right">{R(v.invoiced)}</td><td className="px-3 py-2 text-right">{R(v.paid)}</td><td className="px-3 py-2 text-right text-red-500">{v.cnAmt>0?R(v.cnAmt):"—"}</td><td className="px-3 py-2 text-right font-bold">{R(v.balance)}</td><td className="px-3 py-2 text-right text-gray-400 text-xs">double-click</td></tr>))}</tbody>
             </table>
@@ -1228,26 +1297,26 @@ export default function App() {
                 <p className="text-center text-xs text-gray-500">{v?.gstin}</p>
               </div>
               <table className="w-full text-xs mb-4">
-                <thead><tr className="border-b-2 border-gray-800"><th className="text-left px-3 py-2">Date</th><th className="text-left px-3 py-2">Particulars</th><th className="text-left px-3 py-2">Vch Type</th><th className="text-center px-3 py-2">Vch No</th><th className="text-right px-3 py-2">Debit</th><th className="text-right px-3 py-2">Credit</th></tr></thead>
+                <thead><tr className="border-b-2 border-gray-800"><th className="text-left px-3 py-2">Date</th><th className="text-left px-3 py-2">Particulars</th><th className="text-left px-3 py-2">Vch Type</th><th className="text-center px-3 py-2">Vch No</th><th className="text-left px-3 py-2">Vendor Inv #</th><th className="text-right px-3 py-2">Debit</th><th className="text-right px-3 py-2">Credit</th></tr></thead>
                 <tbody>
-                  {vInv.map(inv=>(<tr key={inv.id} className="border-b border-gray-200 align-top"><td className="py-2">{fmt(inv.date)}</td><td className="py-2"><p className="font-bold">Dr (as per details)</p><p className="ml-4 text-gray-600">Purchase - {v?.name}</p>{inv.lines?.map((l,j)=>(<p key={j} className="ml-8 text-gray-500">{l.name} {l.qty} {l.unit} {l.price?`${R(l.price)}/${l.unit}`:""} {l.lineBase?R(l.lineBase):""}</p>))}{inv.extra&&<p className="ml-4 text-gray-500">{inv.extra.label}: {R(inv.extra.amt)}</p>}{(inv.cgst>0||inv.sgst>0)&&<p className="ml-4 text-gray-500">CGST: {R(inv.cgst)} | SGST: {R(inv.sgst)}</p>}{inv.igst>0&&<p className="ml-4 text-gray-500">IGST: {R(inv.igst)}</p>}</td><td className="py-2">Purchase</td><td className="py-2">{inv.num}</td><td className="py-2"></td><td className="py-2 text-right font-bold">{R(inv.totalGST)}</td></tr>))}
-                  {vCN.map(cn=>(<tr key={cn.id} className="border-b border-gray-200 bg-red-50"><td className="py-2">{fmt(cn.date)}</td><td className="py-2"><p className="font-bold text-red-600">Credit Note</p><p className="ml-4 text-gray-500">{cn.reason}</p></td><td className="py-2">CN</td><td className="py-2">{cn.num}</td><td className="py-2 text-right font-bold text-red-600">{R(cn.totalGST)}</td><td className="py-2"></td></tr>))}
-                  {vPay.sort((a,b)=>a.date.localeCompare(b.date)).map(p=>(<tr key={p.id} className="border-b border-gray-200"><td className="py-2">{fmt(p.date)}</td><td className="py-2"><p className="font-bold">Payment ({p.method?.toUpperCase()})</p><p className="ml-4 text-gray-500">Ref: {p.ref||"—"}</p></td><td className="py-2">Payment</td><td className="py-2">—</td><td className="py-2 text-right font-bold">{R(p.amount)}</td><td className="py-2"></td></tr>))}
+                  {vInv.map(inv=>(<tr key={inv.id} className="border-b border-gray-200 align-top"><td className="py-2">{fmt(inv.date)}</td><td className="py-2"><p className="font-bold">Dr (as per details)</p><p className="ml-4 text-gray-600">Purchase - {v?.name}</p>{inv.lines?.map((l,j)=>(<p key={j} className="ml-8 text-gray-500">{l.name} {l.qty} {l.unit} {l.price?`${R(l.price)}/${l.unit}`:""} {l.lineBase?R(l.lineBase):""}</p>))}{inv.extra&&<p className="ml-4 text-gray-500">{inv.extra.label}: {R(inv.extra.amt)}</p>}{(inv.cgst>0||inv.sgst>0)&&<p className="ml-4 text-gray-500">CGST: {R(inv.cgst)} | SGST: {R(inv.sgst)}</p>}{inv.igst>0&&<p className="ml-4 text-gray-500">IGST: {R(inv.igst)}</p>}</td><td className="py-2">Purchase</td><td className="py-2">{inv.num}</td><td className="py-2 text-gray-500">{grns.find(g=>g.id===inv.grnId)?.vendorInvNum||"—"}</td><td className="py-2"></td><td className="py-2 text-right font-bold">{R(inv.totalGST)}</td></tr>))}
+                  {vCN.map(cn=>(<tr key={cn.id} className="border-b border-gray-200 bg-red-50"><td className="py-2">{fmt(cn.date)}</td><td className="py-2"><p className="font-bold text-red-600">Credit Note</p><p className="ml-4 text-gray-500">{cn.reason}</p></td><td className="py-2">CN</td><td className="py-2">{cn.num}</td><td className="py-2"></td><td className="py-2 text-right font-bold text-red-600">{R(cn.totalGST)}</td><td className="py-2"></td></tr>))}
+                  {vPay.sort((a,b)=>a.date.localeCompare(b.date)).map(p=>(<tr key={p.id} className="border-b border-gray-200"><td className="py-2">{fmt(p.date)}</td><td className="py-2"><p className="font-bold">Payment ({p.method?.toUpperCase()})</p><p className="ml-4 text-gray-500">Ref: {p.ref||"—"}</p></td><td className="py-2">Payment</td><td className="py-2">—</td><td className="py-2"></td><td className="py-2 text-right font-bold">{R(p.amount)}</td><td className="py-2"></td></tr>))}
                 </tbody>
                 <tfoot>
-                  <tr className="border-t-2 border-gray-800"><td colSpan={4}></td><td className="py-2 text-right">{R(vPay.reduce((s,p)=>s+p.amount,0)+vCN.reduce((s,cn)=>s+cn.totalGST,0))}</td><td className="py-2 text-right">{R(vInv.reduce((s,i)=>s+i.totalGST,0))}</td></tr>
-                  <tr><td colSpan={3} className="py-1">{closingBal>0?"Cr":"Dr"}</td><td className="font-bold text-right" colSpan={1}>Closing Balance</td><td colSpan={2} className="text-right"><strong>{R(Math.abs(closingBal))}</strong></td></tr>
+                  <tr className="border-t-2 border-gray-800"><td colSpan={5}></td><td className="py-2 text-right">{R(vPay.reduce((s,p)=>s+p.amount,0)+vCN.reduce((s,cn)=>s+cn.totalGST,0))}</td><td className="py-2 text-right">{R(vInv.reduce((s,i)=>s+i.totalGST,0))}</td></tr>
+                  <tr><td colSpan={4} className="py-1">{closingBal>0?"Cr":"Dr"}</td><td className="font-bold text-right" colSpan={1}>Closing Balance</td><td colSpan={2} className="text-right"><strong>{R(Math.abs(closingBal))}</strong></td></tr>
                 </tfoot>
               </table>
               <div className="flex justify-end mt-4 gap-2">
                 <Btn v="outline" s onClick={()=>setExpanded(null)}>Close</Btn>
                 <Btn v="outline" s onClick={()=>{
                   const rows=[];
-                  vInv.forEach(inv=>{rows.push([fmt(inv.date),"Purchase",inv.num,"",R(inv.totalGST)]);inv.lines?.forEach(l=>{rows.push(["",`  ${l.name} ${l.qty} ${l.unit}`,l.price?`${R(l.price)}/${l.unit}`:"",R(l.lineBase||0),""])});});
-                  vCN.forEach(cn=>{rows.push([fmt(cn.date),`Credit Note: ${cn.reason}`,cn.num,R(cn.totalGST),""]);});
-                  vPay.forEach(p=>{rows.push([fmt(p.date),`Payment (${p.method}) Ref:${p.ref}`,"-",R(p.amount),""]);});
+                  vInv.forEach(inv=>{const vinv=grns.find(g=>g.id===inv.grnId)?.vendorInvNum||"";rows.push([fmt(inv.date),"Purchase",inv.num,vinv,R(inv.totalGST)]);inv.lines?.forEach(l=>{rows.push(["",`  ${l.name} ${l.qty} ${l.unit}`,l.price?`${R(l.price)}/${l.unit}`:"",R(l.lineBase||0),""])});});
+                  vCN.forEach(cn=>{rows.push([fmt(cn.date),`Credit Note: ${cn.reason}`,cn.num,"",R(cn.totalGST)]);});
+                  vPay.forEach(p=>{rows.push([fmt(p.date),`Payment (${p.method}) Ref:${p.ref}`,"-","",R(p.amount)]);});
                   rows.push(["","Closing Balance","","",R(closingBal)]);
-                  dlCSV(`ledger-${v?.name.replace(/\s/g,"-")}.csv`,["Date","Particulars","Ref","Debit","Credit"],rows);
+                  dlCSV(`ledger-${v?.name.replace(/\s/g,"-")}.csv`,["Date","Particulars","Ref","Vendor Inv #","Debit","Credit"],rows);
                 }}>↓ Download Ledger</Btn>
               </div>
             </div>
@@ -1261,28 +1330,97 @@ export default function App() {
   // MANAGER: PAYABLES
   // ═════════════════════════════════════════
   const Payables = () => {
+    const [expandedVid, setExpandedVid] = useState(null);
     const open = apData.filter(i=>i.balance>0);
     const tot = open.reduce((s,i)=>s+i.balance,0);
     const od = open.filter(i=>i.overdue);
+
+    const byVendor = useMemo(()=>{
+      const m = {};
+      open.forEach(inv=>{
+        if(!m[inv.vid]) m[inv.vid]={vid:inv.vid, vname:inv.vname||vM[inv.vid]?.name||"Unknown", invoices:[], total:0, overdue:0};
+        m[inv.vid].invoices.push(inv);
+        m[inv.vid].total += inv.balance;
+        if(inv.overdue) m[inv.vid].overdue += inv.balance;
+      });
+      return Object.values(m).sort((a,b)=>b.total-a.total);
+    },[open]);
+
+    const exportPayablesPDF = () => {
+      let rows = "";
+      byVendor.forEach(vg=>{
+        rows += `<tr style="background:#f9fafb;font-weight:bold"><td colspan="6">${vg.vname}</td><td style="text-align:right">${R(vg.total)}</td></tr>`;
+        vg.invoices.sort((a,b)=>a.due.localeCompare(b.due)).forEach(inv=>{
+          const vinv = grns.find(g=>g.id===inv.grnId)?.vendorInvNum || "—";
+          rows += `<tr><td></td><td>${inv.num}</td><td>${vinv}</td><td style="text-align:right">${R(inv.totalGST)}</td><td style="text-align:right">${R(inv.paid)}</td><td style="text-align:right">${R(inv.balance)}</td><td>${fmt(inv.due)}</td></tr>`;
+        });
+      });
+      printHTML("Payables-Report", `
+        <div class="header"><h1>ACCOUNTS PAYABLE</h1><h2>MAVEN CREATORS AND HOSPITALITY LLP — NOVY HQ</h2></div>
+        <p style="margin:10px 0">Total Payable: <strong>${R(tot)}</strong> | Overdue: <strong>${R(od.reduce((s,i)=>s+i.balance,0))}</strong> | As of ${fmt(td())}</p>
+        <table><thead><tr><th></th><th>Invoice</th><th>Vendor Inv #</th><th style="text-align:right">Total</th><th style="text-align:right">Paid</th><th style="text-align:right">Balance</th><th>Due</th></tr></thead><tbody>${rows}</tbody></table>
+      `);
+    };
+
+    const exportPayablesCSV = () => {
+      const rows = [];
+      open.sort((a,b)=>(a.vname||"").localeCompare(b.vname||"")).forEach(inv=>{
+        const vinv = grns.find(g=>g.id===inv.grnId)?.vendorInvNum || "";
+        rows.push([inv.vname, inv.num, vinv, inv.grnNum||"", inv.totalGST?.toFixed(2), inv.paid?.toFixed(2), inv.cnAmt?.toFixed(2), inv.balance?.toFixed(2), inv.due, inv.cStatus]);
+      });
+      dlCSV("payables.csv",["Vendor","Invoice","Vendor Inv #","GRN","Total","Paid","CN","Balance","Due","Status"],rows);
+    };
+
     return (
       <div className="space-y-4">
-        <div className="flex justify-between items-center">
+        <div className="flex flex-wrap justify-between items-center gap-2">
           <p className="text-sm font-semibold text-gray-700">Payables</p>
-          <Btn v="outline" s onClick={()=>dlCSV("payables.csv",["Invoice","Vendor","Total","Paid","CN","Balance","Due","Status"],apData.map(i=>[i.num,i.vname,i.totalGST?.toFixed(2),i.paid?.toFixed(2),i.cnAmt?.toFixed(2),i.balance?.toFixed(2),i.due,i.cStatus]))}>↓ CSV</Btn>
+          <div className="flex gap-2">
+            <Btn v="outline" s onClick={exportPayablesPDF}>↓ PDF</Btn>
+            <Btn v="outline" s onClick={exportPayablesCSV}>↓ Excel</Btn>
+          </div>
         </div>
         <div className="grid grid-cols-3 gap-3">
           <Stat label="Total Payable" value={R(tot)}/>
           <Stat label="Overdue" value={R(od.reduce((s,i)=>s+i.balance,0))} accent="red" sub={`${od.length} invoices`}/>
           <Stat label="Paid (month)" value={R(payments.filter(p=>p.date.slice(0,7)===td().slice(0,7)).reduce((s,p)=>s+p.amount,0))} accent="green"/>
         </div>
-        {open.length>0&&(
-          <div className="bg-white rounded-xl border overflow-hidden">
-            <table className="w-full text-xs">
-              <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">Vendor</th><th className="px-3 py-2">Invoice</th><th className="text-right px-3 py-2">Balance</th><th className="px-3 py-2">Due</th><th className="text-center px-3 py-2">Status</th><th className="w-10"></th></tr></thead>
-              <tbody>{open.sort((a,b)=>a.due.localeCompare(b.due)).map(inv=>(<tr key={inv.id} className={`border-t ${inv.overdue?"bg-red-50":""}`}><td className="px-3 py-2">{inv.vname}</td><td className="px-3 py-2 font-medium">{inv.num}</td><td className="px-3 py-2 text-right font-bold">{R(inv.balance)}</td><td className="px-3 py-2">{fmt(inv.due)}</td><td className="px-3 py-2 text-center"><Badge t={inv.cStatus} c={sc(inv.cStatus)}/></td><td className="px-3 py-2"><button onClick={()=>setModal({type:"pay",data:inv})} className="text-green-600 text-xs">Pay</button></td></tr>))}</tbody>
-            </table>
+        {byVendor.length>0&&(
+          <div className="space-y-2">
+            {byVendor.map(vg=>(
+              <div key={vg.vid} className="bg-white rounded-xl border overflow-hidden">
+                <div onClick={()=>setExpandedVid(expandedVid===vg.vid?null:vg.vid)} className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-gray-50 transition-colors">
+                  <span className="text-sm">{expandedVid===vg.vid?"▼":"▶"}</span>
+                  <span className="font-medium text-sm flex-1">{vg.vname}</span>
+                  <span className="text-xs text-gray-500">{vg.invoices.length} inv</span>
+                  {vg.overdue>0&&<Badge t={`${R(vg.overdue)} overdue`} c="red"/>}
+                  <span className="font-bold text-sm">{R(vg.total)}</span>
+                </div>
+                {expandedVid===vg.vid&&(
+                  <div className="border-t overflow-x-auto">
+                    <table className="w-full text-xs min-w-[600px]">
+                      <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">Invoice</th><th className="text-left px-3 py-2">Vendor Inv #</th><th className="text-right px-3 py-2">Total</th><th className="text-right px-3 py-2">Paid</th><th className="text-right px-3 py-2">Balance</th><th className="px-3 py-2">Due</th><th className="text-center px-3 py-2">Status</th><th className="w-10"></th></tr></thead>
+                      <tbody>{vg.invoices.sort((a,b)=>a.due.localeCompare(b.due)).map(inv=>{
+                        const vinv = grns.find(g=>g.id===inv.grnId)?.vendorInvNum || "—";
+                        return (<tr key={inv.id} className={`border-t ${inv.overdue?"bg-red-50":""}`}>
+                          <td className="px-3 py-2 font-medium">{inv.num}</td>
+                          <td className="px-3 py-2 text-gray-500">{vinv}</td>
+                          <td className="px-3 py-2 text-right">{R(inv.totalGST)}</td>
+                          <td className="px-3 py-2 text-right text-green-600">{R(inv.paid)}</td>
+                          <td className="px-3 py-2 text-right font-bold">{R(inv.balance)}</td>
+                          <td className="px-3 py-2">{fmt(inv.due)}</td>
+                          <td className="px-3 py-2 text-center"><Badge t={inv.cStatus} c={sc(inv.cStatus)}/></td>
+                          <td className="px-3 py-2"><button onClick={e=>{e.stopPropagation();setModal({type:"pay",data:inv});}} className="text-green-600 text-xs font-medium">Pay</button></td>
+                        </tr>);
+                      })}</tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         )}
+        {byVendor.length===0&&<div className="bg-white rounded-xl border p-6 text-center text-gray-400 text-sm">No outstanding payables</div>}
       </div>
     );
   };
@@ -1295,7 +1433,7 @@ export default function App() {
       <p className="text-sm font-semibold text-gray-700">Credit Notes ({creditNotes.length})</p>
       {creditNotes.length===0?<div className="bg-white rounded-xl border p-6 text-center text-gray-400 text-sm">No credit notes yet — create from GRNs tab</div>:(
         <div className="bg-white rounded-xl border overflow-x-auto">
-          <table className="w-full text-xs">
+          <table className="w-full text-xs min-w-[600px]">
             <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">CN #</th><th className="text-left px-3 py-2">GRN</th><th className="text-left px-3 py-2">Vendor</th><th className="px-3 py-2">Date</th><th className="text-left px-3 py-2">Reason</th><th className="text-right px-3 py-2">Base</th><th className="text-right px-3 py-2">GST</th><th className="text-right px-3 py-2">Total</th></tr></thead>
             <tbody>{creditNotes.slice().reverse().map(cn=>(
               <tr key={cn.id} className="border-t hover:bg-gray-50">
