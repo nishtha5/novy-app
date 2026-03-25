@@ -314,6 +314,15 @@ const SEED = {
 // ═══════════════════════════════════════════════════════════════════
 // UI COMPONENTS
 // ═══════════════════════════════════════════════════════════════════
+
+// Standalone editable text input — keeps focus on re-render
+const InlineEdit = ({value, onChange, placeholder, className}) => {
+  const [local, setLocal] = useState(value || "");
+  const ref = useRef(null);
+  const flush = () => { if (local !== (value||"")) onChange(local); };
+  return <input ref={ref} type="text" className={className} placeholder={placeholder} value={local} onChange={e=>setLocal(e.target.value)} onBlur={flush} onKeyDown={e=>{if(e.key==="Enter"){flush();ref.current?.blur();}}}/>;
+};
+
 const Badge = ({t, c}) => {
   const m = {green:"bg-green-100 text-green-700",yellow:"bg-yellow-100 text-yellow-700",red:"bg-red-100 text-red-700",blue:"bg-blue-100 text-blue-700",gray:"bg-gray-100 text-gray-600",orange:"bg-orange-100 text-orange-700",purple:"bg-purple-100 text-purple-700",cyan:"bg-cyan-100 text-cyan-700"};
   return <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${m[c]||m.gray}`}>{t}</span>;
@@ -947,7 +956,7 @@ export default function App() {
                   </div>
                   <div className="flex items-center gap-2 mb-2 bg-blue-50 rounded-lg px-3 py-2">
                     <span className="text-xs font-medium text-blue-700">Vendor Invoice #:</span>
-                    <input type="text" className="border border-blue-200 rounded-lg px-3 py-1.5 text-sm flex-1 max-w-xs focus:outline-none focus:ring-2 focus:ring-blue-300" placeholder="Enter vendor bill/invoice number" value={g.vendorInvNum||""} onChange={e=>{setGrns(p=>p.map(x=>x.id===g.id?{...x,vendorInvNum:e.target.value}:x));}}/>
+                    <InlineEdit className="border border-blue-200 rounded-lg px-3 py-1.5 text-sm flex-1 max-w-xs focus:outline-none focus:ring-2 focus:ring-blue-300" placeholder="Enter vendor bill/invoice number" value={g.vendorInvNum||""} onChange={val=>{setGrns(p=>p.map(x=>x.id===g.id?{...x,vendorInvNum:val}:x));}}/>
                     {g.vendorInvNum && <Badge t="Mapped" c="green"/>}
                   </div>
                   <table className="w-full text-xs">
@@ -1342,17 +1351,17 @@ export default function App() {
         </div>
       </div>
       <div className="max-w-6xl mx-auto px-4 py-5">
-        {tab==="place_order"&&!isM&&PlaceOrder()}
-        {tab==="receiving"&&!isM&&Receiving()}
-        {tab==="setup"&&!isM&&Setup()}
-        {tab==="mgr_dashboard"&&isM&&MgrDash()}
-        {tab==="mgr_pos"&&isM&&MgrPOs()}
-        {tab==="mgr_grns"&&isM&&MgrGRNs()}
-        {tab==="mgr_pricing"&&isM&&Pricing()}
-        {tab==="mgr_invoices"&&isM&&MgrInvoices()}
-        {tab==="mgr_ledger"&&isM&&Ledger()}
-        {tab==="mgr_payables"&&isM&&Payables()}
-        {tab==="mgr_cn"&&isM&&CreditNotesList()}
+        {tab==="place_order"&&!isM&&<PlaceOrder/>}
+        {tab==="receiving"&&!isM&&<Receiving/>}
+        {tab==="setup"&&!isM&&<Setup/>}
+        {tab==="mgr_dashboard"&&isM&&<MgrDash/>}
+        {tab==="mgr_pos"&&isM&&<MgrPOs/>}
+        {tab==="mgr_grns"&&isM&&<MgrGRNs/>}
+        {tab==="mgr_pricing"&&isM&&<Pricing/>}
+        {tab==="mgr_invoices"&&isM&&<MgrInvoices/>}
+        {tab==="mgr_ledger"&&isM&&<Ledger/>}
+        {tab==="mgr_payables"&&isM&&<Payables/>}
+        {tab==="mgr_cn"&&isM&&<CreditNotesList/>}
       </div>
       {modal?.type==="receive"&&<ReceiveModal po={modal.data}/>}
       {modal?.type==="pay"&&<PayModal inv={modal.data}/>}
