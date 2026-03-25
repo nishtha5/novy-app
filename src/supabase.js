@@ -7,9 +7,12 @@
 // 3. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your .env or Vercel
 // ═══════════════════════════════════════════════════════════════════
 
-const URL = import.meta.env.VITE_SUPABASE_URL || "";
+const URL = (import.meta.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "");
 const KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
 const REST = `${URL}/rest/v1`;
+
+// Helper: convert non-UUID strings like "unknown" to null
+const toUUID = (v) => (v && v.length > 10 && v !== "unknown" ? v : null);
 
 const hdrs = (extra = {}) => ({
   apikey: KEY,
@@ -140,7 +143,7 @@ export const createPurchaseOrder = async (po, staffId) => {
   const numData = await rpc("generate_po_number");
   const poNumber = numData || po.num;
   const rows = await post("purchase_orders", {
-    po_number: poNumber, vendor_id: po.vid, placed_by: staffId,
+    po_number: poNumber, vendor_id: toUUID(po.vid), placed_by: toUUID(staffId),
     placed_by_name: po.by, status: po.status || "draft", notes: po.notes || "",
   });
   const d = rows[0];
@@ -177,7 +180,7 @@ export const createGRN = async (grn) => {
   const grnNumber = numData || grn.grnNum;
   const rows = await post("grns", {
     grn_number: grnNumber, po_id: grn.poId, po_number: grn.poNum,
-    vendor_id: grn.vid, received_by_name: grn.signOff, sign_off_name: grn.signOff,
+    vendor_id: toUUID(grn.vid), received_by_name: grn.signOff, sign_off_name: grn.signOff,
     has_discrepancy: grn.hasDisc, vendor_invoice_number: grn.vendorInvNum || "", notes: grn.notes || "",
   });
   const d = rows[0];
@@ -221,7 +224,7 @@ export const createInvoice = async (inv) => {
   const invNumber = numData || inv.num;
   const rows = await post("invoices", {
     invoice_number: invNumber, grn_id: inv.grnId, grn_number: inv.grnNum,
-    po_number: inv.poNum, vendor_id: inv.vid, vendor_name: inv.vname,
+    po_number: inv.poNum, vendor_id: toUUID(inv.vid), vendor_name: inv.vname,
     vendor_gstin: inv.vgstin, vendor_invoice_number: inv.vendorInvNum,
     is_intra_state: inv.intra, due_date: inv.due, base_total: inv.base,
     extra_charges: inv.extra?.amt || 0, extra_charges_label: inv.extra?.label || "",
@@ -249,7 +252,7 @@ export const fetchPayments = async () => {
 
 export const createPayment = async (payment) => {
   const rows = await post("payments", {
-    invoice_id: payment.invId, vendor_id: payment.vid, amount: payment.amount,
+    invoice_id: toUUID(payment.invId), vendor_id: toUUID(payment.vid), amount: payment.amount,
     payment_date: payment.date, method: payment.method,
     reference_number: payment.ref, recorded_by_name: payment.by,
   });
@@ -278,7 +281,7 @@ export const createCreditNote = async (cn) => {
   const cnNumber = numData || cn.num;
   const rows = await post("credit_notes", {
     cn_number: cnNumber, grn_id: cn.grnId, grn_number: cn.grnNum,
-    invoice_id: cn.invId || null, vendor_id: cn.vid, vendor_name: cn.vname,
+    invoice_id: toUUID(cn.invId), vendor_id: toUUID(cn.vid), vendor_name: cn.vname,
     reason: cn.reason, base_total: cn.base, cgst: cn.cgst, sgst: cn.sgst,
     igst: cn.igst, total_with_gst: cn.totalGST, created_by_name: cn.createdBy || "",
   });
@@ -294,7 +297,7 @@ export const createCreditNote = async (cn) => {
 // ── PRICE HISTORY ─────────────────────────────────────────────────
 export const savePriceHistory = async (entries) => {
   const rows = entries.map((e) => ({
-    item_id: e.iid, vendor_id: e.vid, item_name: e.name,
+    item_id: toUUID(e.iid), vendor_id: toUUID(e.vid), item_name: e.name,
     vendor_name: e.vname, unit_price: e.price, source: "grn",
   }));
   await post("price_history", rows);
