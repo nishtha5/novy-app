@@ -605,23 +605,41 @@ export default function App() {
         {lines.length === 0 && <div className="bg-white rounded-xl border p-6 text-center text-gray-400 text-sm">No items selected — pick from above</div>}
 
         {lines.length > 0 && (
-          <div className="bg-white rounded-xl border overflow-x-auto">
-            <table className="w-full text-xs min-w-full sm:min-w-[600px]">
-              <thead className="bg-gray-50"><tr><th className="text-left px-2 sm:px-3 py-2">Item</th><th className="hidden sm:table-cell px-3 py-2 w-24">Qty</th><th className="hidden sm:table-cell px-3 py-2 w-20">Unit</th><th className="hidden md:table-cell px-3 py-2">Vendor</th><th className="hidden lg:table-cell px-3 py-2 w-28">Delivery</th><th className="hidden xl:table-cell px-3 py-2">Notes</th><th className="px-2 sm:px-3 py-2 w-8"></th></tr></thead>
-              <tbody>
-                {lines.map((l,i)=>(
-                  <tr key={i} className="border-t">
-                    <td className="px-2 sm:px-3 py-2 font-medium text-xs sm:text-sm">{l.name}</td>
-                    <td className="hidden sm:table-cell px-3 py-1"><input type="number" min="0" step={qtyStep(l.unit)} className="w-full text-center border rounded px-2 py-2 text-sm min-w-[80px]" value={l.qty} onChange={e=>{const n=[...lines];n[i]={...n[i],qty:sanitizeQty(+e.target.value,l.unit)};setLines(n);}}/></td>
-                    <td className="hidden sm:table-cell px-3 py-1"><select className="w-full border rounded px-1 py-1 text-xs text-center" value={l.unit} onChange={e=>{const n=[...lines];const u=e.target.value;n[i]={...n[i],unit:u,qty:sanitizeQty(n[i].qty,u)};setLines(n);}}>{UNITS.map(u=><option key={u} value={u}>{u}</option>)}</select></td>
-                    <td className="hidden md:table-cell px-3 py-1"><select className="w-full border rounded px-1 py-1 text-xs" value={l.vid} onChange={e=>{const n=[...lines];n[i]={...n[i],vid:e.target.value,vname:vendors.find(v=>v.id===e.target.value)?.name||""};setLines(n);}}><option value="">Select...</option>{vendors.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></td>
-                    <td className="hidden lg:table-cell px-3 py-1"><input type="date" className="w-full border rounded px-1 py-1 text-xs" value={l.delDate} onChange={e=>{const n=[...lines];n[i]={...n[i],delDate:e.target.value};setLines(n);}}/></td>
-                    <td className="hidden xl:table-cell px-3 py-1"><input type="text" className="w-full border rounded px-1 py-1 text-xs" placeholder="Notes" value={l.notes} onChange={e=>{const n=[...lines];n[i]={...n[i],notes:e.target.value};setLines(n);}}/></td>
-                    <td className="px-2 sm:px-3 py-1"><button onClick={()=>setLines(lines.filter((_,j)=>j!==i))} className="text-red-400 hover:text-red-600 text-xs">×</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="bg-white rounded-xl border">
+            <div className="divide-y">
+              {lines.map((l,i)=>(
+                <div key={i} className="p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-semibold text-sm text-gray-800">{l.name}</span>
+                    <button onClick={()=>setLines(lines.filter((_,j)=>j!==i))} className="text-red-400 hover:text-red-600 text-lg leading-none">×</button>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 mb-2">
+                    <div>
+                      <label className="text-[10px] text-gray-400 uppercase">Qty</label>
+                      <input type="number" min="0" step={qtyStep(l.unit)} className="w-full text-center border rounded px-2 py-1.5 text-sm" value={l.qty} onChange={e=>{const n=[...lines];n[i]={...n[i],qty:sanitizeQty(+e.target.value,l.unit)};setLines(n);}}/>
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-gray-400 uppercase">Unit</label>
+                      <select className="w-full border rounded px-1 py-1.5 text-xs" value={l.unit} onChange={e=>{const n=[...lines];const u=e.target.value;n[i]={...n[i],unit:u,qty:sanitizeQty(n[i].qty,u)};setLines(n);}}>{UNITS.map(u=><option key={u} value={u}>{u}</option>)}</select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-gray-400 uppercase">Delivery</label>
+                      <input type="date" className="w-full border rounded px-1 py-1.5 text-xs" value={l.delDate} onChange={e=>{const n=[...lines];n[i]={...n[i],delDate:e.target.value};setLines(n);}}/>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[10px] text-gray-400 uppercase">Vendor</label>
+                      <select className="w-full border rounded px-1 py-1.5 text-xs" value={l.vid} onChange={e=>{const n=[...lines];n[i]={...n[i],vid:e.target.value,vname:vendors.find(v=>v.id===e.target.value)?.name||""};setLines(n);}}><option value="">Select vendor...</option>{vendors.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-gray-400 uppercase">Notes</label>
+                      <input type="text" className="w-full border rounded px-2 py-1.5 text-xs" placeholder="Optional" value={l.notes} onChange={e=>{const n=[...lines];n[i]={...n[i],notes:e.target.value};setLines(n);}}/>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
             {(() => {
               const vG={}; lines.forEach(l=>{const vid=l.vid||"unknown";const vn=l.vname||"No vendor";if(!vG[vid])vG[vid]={name:vn,count:0};vG[vid].count++;});
               const gs=Object.values(vG);
@@ -693,28 +711,29 @@ export default function App() {
     return (
       <Modal title={`Receive ${po.num}`} wide onClose={()=>setModal(null)}>
         <p className="text-sm text-gray-500 mb-3">{vM[po.vid]?.name}</p>
-        <div className="overflow-x-auto mb-3">
-        <table className="w-full text-xs sm:text-sm mb-3 border rounded-lg overflow-hidden min-w-full">
-          <thead className="bg-gray-50"><tr><th className="text-left px-2 sm:px-3 py-2">Item</th><th className="hidden sm:table-cell text-center px-3 py-2 w-20">Ordered</th><th className="hidden sm:table-cell text-center px-3 py-2 w-20">Already Recd</th><th className="text-center px-2 sm:px-3 py-2 w-20 sm:w-24">Receiving</th><th className="hidden md:table-cell text-left px-3 py-2">Reason</th></tr></thead>
-          <tbody>
-            {recL.map((l,i)=>{
-              const prevRec = alreadyReceived[l.iid]||0;
-              const maxQty = l.qty - prevRec;
-              const diff = l.qtyRec !== maxQty;
-              return (
-                <tr key={i} className={`border-t ${diff?"bg-amber-50":""}`}>
-                  <td className="px-2 sm:px-3 py-2"><span className="block font-medium text-xs sm:text-sm">{l.name}</span><span className="text-gray-400 text-xs">({l.unit})</span></td>
-                  <td className="hidden sm:table-cell px-3 py-2 text-center">{l.qty}</td>
-                  <td className="hidden sm:table-cell px-3 py-2 text-center text-green-600">{prevRec}</td>
-                  <td className="px-2 sm:px-3 py-1"><input type="number" min="0" max={maxQty} step={qtyStep(l.unit)} className="w-full text-center border rounded px-2 py-2 text-xs sm:text-sm min-w-[70px]" value={l.qtyRec} onChange={e=>up(i,"qtyRec",sanitizeQty(+e.target.value,l.unit))}/></td>
-                  <td className="hidden md:table-cell px-3 py-1">
-                    {diff ? (<select className="w-full border rounded px-1 py-1 text-xs" value={l.discReason} onChange={e=>up(i,"discReason",e.target.value)}><option value="">Select...</option>{DISC_REASONS.map(r=><option key={r}>{r}</option>)}</select>) : <span className="text-gray-300 text-xs">—</span>}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div className="space-y-0 divide-y mb-3 border rounded-lg overflow-hidden">
+          {recL.map((l,i)=>{
+            const prevRec = alreadyReceived[l.iid]||0;
+            const maxQty = l.qty - prevRec;
+            const diff = l.qtyRec !== maxQty;
+            return (
+              <div key={i} className={`p-3 ${diff?"bg-amber-50":""}`}>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-semibold text-sm text-gray-800">{l.name} <span className="text-gray-400 text-xs font-normal">({l.unit})</span></span>
+                </div>
+                <div className="grid grid-cols-3 gap-2 mb-1">
+                  <div><label className="text-[10px] text-gray-400 uppercase">Ordered</label><div className="text-center border rounded px-2 py-1.5 text-sm bg-gray-50 text-gray-600">{l.qty}</div></div>
+                  <div><label className="text-[10px] text-gray-400 uppercase">Already Recd</label><div className="text-center border rounded px-2 py-1.5 text-sm bg-gray-50 text-green-600">{prevRec}</div></div>
+                  <div><label className="text-[10px] text-gray-400 uppercase">Receiving</label><input type="number" min="0" max={maxQty} step={qtyStep(l.unit)} className="w-full text-center border rounded px-2 py-1.5 text-sm" value={l.qtyRec} onChange={e=>up(i,"qtyRec",sanitizeQty(+e.target.value,l.unit))}/></div>
+                </div>
+                {diff && (
+                  <div className="mt-2"><label className="text-[10px] text-gray-400 uppercase">Reason for difference</label>
+                    <select className="w-full border rounded px-2 py-1.5 text-sm" value={l.discReason} onChange={e=>up(i,"discReason",e.target.value)}><option value="">Select reason...</option>{DISC_REASONS.map(r=><option key={r}>{r}</option>)}</select>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
           <div><label className="text-xs text-gray-500">Sign-off *</label><input className="w-full border rounded-lg px-3 py-2 text-sm" value={signOff} onChange={e=>setSignOff(e.target.value)}/></div>
@@ -1152,31 +1171,45 @@ export default function App() {
 
     return (
       <div className="bg-white rounded-xl border p-4">
-        <div className="flex items-center gap-2 mb-3">
+        <div className="flex flex-wrap items-center gap-2 mb-3">
           <span className="font-bold text-sm">{grn.grnNum}</span>
           <Badge t={`PO: ${po?.num}`} c="blue"/>
           <Badge t={vendor?.name} c="orange"/>
           {vendorInvNum && <Badge t={`Vendor Inv: ${vendorInvNum}`} c="cyan"/>}
-          <span className="text-xs text-gray-400 ml-auto">{vendor?.intra?"CGST+SGST":"IGST"} • {vendor?.gstin}</span>
+          <span className="text-xs text-gray-400">{vendor?.intra?"CGST+SGST":"IGST"}</span>
         </div>
-        <table className="w-full text-xs mb-3">
-          <thead className="bg-gray-50"><tr><th className="text-left px-2 py-2">Item</th><th className="px-2 py-2">Qty</th><th className="px-2 py-2">Unit</th><th className="text-right px-2 py-2 w-24">Rate ₹</th><th className="text-center px-2 py-2 w-12">Prev</th><th className="px-2 py-2 w-16">GST%</th><th className="text-right px-2 py-2 w-24">Total ₹</th></tr></thead>
-          <tbody>{pL.map((l,i)=>{
-            const qty=l.qtyRec||l.qty;const autoTotal=qty*l.price;const lineTotal=l.totalOverride!==null?l.totalOverride:autoTotal;const diff=l.prevPrice>0&&l.price>0&&l.price!==l.prevPrice;
-            return (<tr key={i} className={`border-t ${diff?"bg-amber-50":""}`}>
-              <td className="px-2 py-2 font-medium">{l.name}{diff&&<span className="text-amber-600 ml-1" title={`Previous: ${R(l.prevPrice)}`}>⚑</span>}</td>
-              <td className="px-2 py-2 text-center">{qty}</td><td className="px-2 py-2 text-center text-gray-500">{l.unit}</td>
-              <td className="px-2 py-1"><input type="number" step="0.01" min="0" className="w-full text-right border rounded px-2 py-2 text-sm" value={l.price||""} placeholder="0" onChange={e=>up(i,{price:+e.target.value,totalOverride:null})}/></td>
-              <td className="px-2 py-2 text-center text-gray-400">{l.prevPrice?R(l.prevPrice):"—"}</td>
-              <td className="px-2 py-1"><select className="w-full text-center border rounded px-0 py-1.5 text-xs" value={l.gst} onChange={e=>up(i,{gst:+e.target.value})}>{GST_RATES.map(r=><option key={r} value={r}>{r}%</option>)}</select></td>
-              <td className="px-2 py-1"><input type="number" step="0.01" min="0" className="w-full text-right border rounded px-2 py-2 text-sm" value={l.totalOverride!==null?l.totalOverride:autoTotal||""} onChange={e=>up(i,{totalOverride:+e.target.value})}/></td>
-            </tr>);
-          })}</tbody>
-        </table>
-        <div className="flex items-center gap-2 mb-3 text-xs">
-          <span className="text-gray-500">Extra charges (freight/delivery):</span>
-          <input className="border rounded px-3 py-1.5 w-40" placeholder="Label..." value={extraLabel} onChange={e=>setExtraLabel(e.target.value)}/>
-          <input type="number" step="0.01" className="border rounded px-3 py-1.5 w-28 text-right text-sm" placeholder="₹0" value={extraAmt||""} onChange={e=>setExtraAmt(+e.target.value)}/>
+        <div className="divide-y mb-3">
+          {pL.map((l,i)=>{
+            const qty=l.qtyRec||l.qty;const autoTotal=qty*l.price;const diff=l.prevPrice>0&&l.price>0&&l.price!==l.prevPrice;
+            return (<div key={i} className={`py-3 ${diff?"bg-amber-50 -mx-4 px-4":""}`}>
+              <div className="flex justify-between items-center mb-2">
+                <span className="font-semibold text-sm">{l.name}{diff&&<span className="text-amber-600 ml-1">⚑</span>}</span>
+                <span className="text-xs text-gray-500">{qty} {l.unit}</span>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="text-[10px] text-gray-400 uppercase">Rate ₹</label>
+                  <input type="number" step="0.01" min="0" className="w-full text-right border rounded px-2 py-1.5 text-sm" value={l.price||""} placeholder="0" onChange={e=>up(i,{price:+e.target.value,totalOverride:null})}/>
+                  {l.prevPrice>0&&<span className="text-[10px] text-gray-400">Prev: {R(l.prevPrice)}</span>}
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-400 uppercase">GST%</label>
+                  <select className="w-full border rounded px-1 py-1.5 text-xs" value={l.gst} onChange={e=>up(i,{gst:+e.target.value})}>{GST_RATES.map(r=><option key={r} value={r}>{r}%</option>)}</select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-400 uppercase">Total ₹</label>
+                  <input type="number" step="0.01" min="0" className="w-full text-right border rounded px-2 py-1.5 text-sm" value={l.totalOverride!==null?l.totalOverride:autoTotal||""} onChange={e=>up(i,{totalOverride:+e.target.value})}/>
+                </div>
+              </div>
+            </div>);
+          })}
+        </div>
+        <div className="mb-3">
+          <label className="text-[10px] text-gray-400 uppercase">Extra charges (freight/delivery)</label>
+          <div className="grid grid-cols-2 gap-2 mt-1">
+            <input className="border rounded px-3 py-1.5 text-sm" placeholder="Label..." value={extraLabel} onChange={e=>setExtraLabel(e.target.value)}/>
+            <input type="number" step="0.01" className="border rounded px-3 py-1.5 text-right text-sm" placeholder="₹0" value={extraAmt||""} onChange={e=>setExtraAmt(+e.target.value)}/>
+          </div>
         </div>
         <div className="bg-gray-50 rounded-lg p-3 flex flex-wrap gap-4 items-center text-xs mb-3">
           <span>Base: <strong>{R(baseTotal)}</strong></span>
