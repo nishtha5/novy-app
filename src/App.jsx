@@ -344,7 +344,7 @@ const Stat = ({label, value, sub, accent="orange"}) => {
 
 const Modal = ({title, onClose, children, wide}) => (
   <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 pt-6 overflow-y-auto" onClick={onClose}>
-    <div className={`bg-white rounded-2xl shadow-2xl p-6 m-4 mb-12 ${wide?"w-full max-w-5xl":"w-full max-w-lg"}`} onClick={e=>e.stopPropagation()}>
+    <div className={`bg-white rounded-2xl shadow-2xl p-4 sm:p-6 m-4 mb-12 w-full ${wide?"sm:max-w-5xl":"sm:max-w-lg"}`} onClick={e=>e.stopPropagation()}>
       <div className="flex justify-between items-center mb-4">
         <h2 className="text-lg font-bold text-gray-800">{title}</h2>
         <button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-gray-100 text-gray-400 hover:text-gray-600 text-xl flex items-center justify-center">×</button>
@@ -606,18 +606,18 @@ export default function App() {
 
         {lines.length > 0 && (
           <div className="bg-white rounded-xl border overflow-x-auto">
-            <table className="w-full text-xs min-w-[600px]">
-              <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">Item</th><th className="px-3 py-2 w-24">Qty</th><th className="px-3 py-2 w-20">Unit</th><th className="px-3 py-2">Vendor</th><th className="px-3 py-2 w-28">Delivery</th><th className="px-3 py-2">Notes</th><th className="w-8"></th></tr></thead>
+            <table className="w-full text-xs min-w-full sm:min-w-[600px]">
+              <thead className="bg-gray-50"><tr><th className="text-left px-2 sm:px-3 py-2">Item</th><th className="hidden sm:table-cell px-3 py-2 w-24">Qty</th><th className="hidden sm:table-cell px-3 py-2 w-20">Unit</th><th className="hidden md:table-cell px-3 py-2">Vendor</th><th className="hidden lg:table-cell px-3 py-2 w-28">Delivery</th><th className="hidden xl:table-cell px-3 py-2">Notes</th><th className="px-2 sm:px-3 py-2 w-8"></th></tr></thead>
               <tbody>
                 {lines.map((l,i)=>(
                   <tr key={i} className="border-t">
-                    <td className="px-3 py-2 font-medium">{l.name}</td>
-                    <td className="px-3 py-1"><input type="number" min="0" step={qtyStep(l.unit)} className="w-full text-center border rounded px-2 py-2 text-sm min-w-[80px]" value={l.qty} onChange={e=>{const n=[...lines];n[i]={...n[i],qty:sanitizeQty(+e.target.value,l.unit)};setLines(n);}}/></td>
-                    <td className="px-3 py-1"><select className="w-full border rounded px-1 py-1 text-xs text-center" value={l.unit} onChange={e=>{const n=[...lines];const u=e.target.value;n[i]={...n[i],unit:u,qty:sanitizeQty(n[i].qty,u)};setLines(n);}}>{UNITS.map(u=><option key={u} value={u}>{u}</option>)}</select></td>
-                    <td className="px-3 py-1"><select className="w-full border rounded px-1 py-1 text-xs" value={l.vid} onChange={e=>{const n=[...lines];n[i]={...n[i],vid:e.target.value,vname:vendors.find(v=>v.id===e.target.value)?.name||""};setLines(n);}}><option value="">Select...</option>{vendors.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></td>
-                    <td className="px-3 py-1"><input type="date" className="w-full border rounded px-1 py-1 text-xs" value={l.delDate} onChange={e=>{const n=[...lines];n[i]={...n[i],delDate:e.target.value};setLines(n);}}/></td>
-                    <td className="px-3 py-1"><input type="text" className="w-full border rounded px-1 py-1 text-xs" placeholder="Notes" value={l.notes} onChange={e=>{const n=[...lines];n[i]={...n[i],notes:e.target.value};setLines(n);}}/></td>
-                    <td className="px-3 py-1"><button onClick={()=>setLines(lines.filter((_,j)=>j!==i))} className="text-red-400 hover:text-red-600 text-xs">×</button></td>
+                    <td className="px-2 sm:px-3 py-2 font-medium text-xs sm:text-sm">{l.name}</td>
+                    <td className="hidden sm:table-cell px-3 py-1"><input type="number" min="0" step={qtyStep(l.unit)} className="w-full text-center border rounded px-2 py-2 text-sm min-w-[80px]" value={l.qty} onChange={e=>{const n=[...lines];n[i]={...n[i],qty:sanitizeQty(+e.target.value,l.unit)};setLines(n);}}/></td>
+                    <td className="hidden sm:table-cell px-3 py-1"><select className="w-full border rounded px-1 py-1 text-xs text-center" value={l.unit} onChange={e=>{const n=[...lines];const u=e.target.value;n[i]={...n[i],unit:u,qty:sanitizeQty(n[i].qty,u)};setLines(n);}}>{UNITS.map(u=><option key={u} value={u}>{u}</option>)}</select></td>
+                    <td className="hidden md:table-cell px-3 py-1"><select className="w-full border rounded px-1 py-1 text-xs" value={l.vid} onChange={e=>{const n=[...lines];n[i]={...n[i],vid:e.target.value,vname:vendors.find(v=>v.id===e.target.value)?.name||""};setLines(n);}}><option value="">Select...</option>{vendors.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></td>
+                    <td className="hidden lg:table-cell px-3 py-1"><input type="date" className="w-full border rounded px-1 py-1 text-xs" value={l.delDate} onChange={e=>{const n=[...lines];n[i]={...n[i],delDate:e.target.value};setLines(n);}}/></td>
+                    <td className="hidden xl:table-cell px-3 py-1"><input type="text" className="w-full border rounded px-1 py-1 text-xs" placeholder="Notes" value={l.notes} onChange={e=>{const n=[...lines];n[i]={...n[i],notes:e.target.value};setLines(n);}}/></td>
+                    <td className="px-2 sm:px-3 py-1"><button onClick={()=>setLines(lines.filter((_,j)=>j!==i))} className="text-red-400 hover:text-red-600 text-xs">×</button></td>
                   </tr>
                 ))}
               </tbody>
@@ -662,11 +662,11 @@ export default function App() {
                 <Btn v="outline" s onClick={()=>setModal({type:"receive",data:po})} disabled={remaining.length===0}>{remaining.length>0?"Receive":"Fully Received"}</Btn>
               </div>
               <div className="overflow-x-auto">
-              <table className="w-full text-xs min-w-[600px]">
-                <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">Item</th><th className="px-3 py-2">Ordered</th><th className="px-3 py-2">Received</th><th className="px-3 py-2">Pending</th></tr></thead>
+              <table className="w-full text-xs min-w-full sm:min-w-[600px]">
+                <thead className="bg-gray-50"><tr><th className="text-left px-2 sm:px-3 py-2">Item</th><th className="px-2 sm:px-3 py-2 text-center">Ordered</th><th className="px-2 sm:px-3 py-2 text-center">Received</th><th className="px-2 sm:px-3 py-2 text-center">Pending</th></tr></thead>
                 <tbody>{po.lines.map((l,i)=>{
                   const rec = alreadyReceived[l.iid]||0;
-                  return <tr key={i} className="border-t"><td className="px-3 py-2 font-medium">{l.name}</td><td className="px-3 py-2 text-center">{l.qty}</td><td className="px-3 py-2 text-center text-green-600">{rec}</td><td className="px-3 py-2 text-center text-orange-600">{l.qty-rec}</td></tr>;
+                  return <tr key={i} className="border-t"><td className="px-2 sm:px-3 py-2 font-medium text-xs sm:text-sm">{l.name}</td><td className="px-2 sm:px-3 py-2 text-center">{l.qty}</td><td className="px-2 sm:px-3 py-2 text-center text-green-600">{rec}</td><td className="px-2 sm:px-3 py-2 text-center text-orange-600">{l.qty-rec}</td></tr>;
                 })}</tbody>
               </table>
               </div>
@@ -693,8 +693,9 @@ export default function App() {
     return (
       <Modal title={`Receive ${po.num}`} wide onClose={()=>setModal(null)}>
         <p className="text-sm text-gray-500 mb-3">{vM[po.vid]?.name}</p>
-        <table className="w-full text-sm mb-3 border rounded-lg overflow-hidden">
-          <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">Item</th><th className="text-center px-3 py-2 w-20">Ordered</th><th className="text-center px-3 py-2 w-20">Already Recd</th><th className="text-center px-3 py-2 w-24">Receiving Now</th><th className="text-left px-3 py-2">Reason (if diff)</th></tr></thead>
+        <div className="overflow-x-auto mb-3">
+        <table className="w-full text-xs sm:text-sm mb-3 border rounded-lg overflow-hidden min-w-full">
+          <thead className="bg-gray-50"><tr><th className="text-left px-2 sm:px-3 py-2">Item</th><th className="hidden sm:table-cell text-center px-3 py-2 w-20">Ordered</th><th className="hidden sm:table-cell text-center px-3 py-2 w-20">Already Recd</th><th className="text-center px-2 sm:px-3 py-2 w-20 sm:w-24">Receiving</th><th className="hidden md:table-cell text-left px-3 py-2">Reason</th></tr></thead>
           <tbody>
             {recL.map((l,i)=>{
               const prevRec = alreadyReceived[l.iid]||0;
@@ -702,11 +703,11 @@ export default function App() {
               const diff = l.qtyRec !== maxQty;
               return (
                 <tr key={i} className={`border-t ${diff?"bg-amber-50":""}`}>
-                  <td className="px-3 py-2">{l.name} <span className="text-gray-400 text-xs">({l.unit})</span></td>
-                  <td className="px-3 py-2 text-center">{l.qty}</td>
-                  <td className="px-3 py-2 text-center text-green-600">{prevRec}</td>
-                  <td className="px-3 py-1"><input type="number" min="0" max={maxQty} step={qtyStep(l.unit)} className="w-full text-center border rounded px-2 py-2 text-sm min-w-[80px]" value={l.qtyRec} onChange={e=>up(i,"qtyRec",sanitizeQty(+e.target.value,l.unit))}/></td>
-                  <td className="px-3 py-1">
+                  <td className="px-2 sm:px-3 py-2"><span className="block font-medium text-xs sm:text-sm">{l.name}</span><span className="text-gray-400 text-xs">({l.unit})</span></td>
+                  <td className="hidden sm:table-cell px-3 py-2 text-center">{l.qty}</td>
+                  <td className="hidden sm:table-cell px-3 py-2 text-center text-green-600">{prevRec}</td>
+                  <td className="px-2 sm:px-3 py-1"><input type="number" min="0" max={maxQty} step={qtyStep(l.unit)} className="w-full text-center border rounded px-2 py-2 text-xs sm:text-sm min-w-[70px]" value={l.qtyRec} onChange={e=>up(i,"qtyRec",sanitizeQty(+e.target.value,l.unit))}/></td>
+                  <td className="hidden md:table-cell px-3 py-1">
                     {diff ? (<select className="w-full border rounded px-1 py-1 text-xs" value={l.discReason} onChange={e=>up(i,"discReason",e.target.value)}><option value="">Select...</option>{DISC_REASONS.map(r=><option key={r}>{r}</option>)}</select>) : <span className="text-gray-300 text-xs">—</span>}
                   </td>
                 </tr>
@@ -714,7 +715,8 @@ export default function App() {
             })}
           </tbody>
         </table>
-        <div className="grid grid-cols-2 gap-3 mb-3">
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
           <div><label className="text-xs text-gray-500">Sign-off *</label><input className="w-full border rounded-lg px-3 py-2 text-sm" value={signOff} onChange={e=>setSignOff(e.target.value)}/></div>
           <div><label className="text-xs text-gray-500">Notes</label><input className="w-full border rounded-lg px-3 py-2 text-sm" placeholder="Optional..." value={notes} onChange={e=>setNotes(e.target.value)}/></div>
         </div>
@@ -882,7 +884,7 @@ export default function App() {
     return (
       <div className="space-y-4">
         <PeriodBar {...{dateFrom,dateTo,setDateFrom,setDateTo,period,setPeriod}}/>
-        <div className="grid grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <Stat label="Total POs" value={fOrders.length}/>
           <Stat label="Draft" value={draftC} accent="yellow"/>
           <Stat label="Sent to Vendor" value={sentC} accent="blue"/>
@@ -931,21 +933,26 @@ export default function App() {
           <div className="space-y-3">
             {shown.slice().reverse().map(o=>(
               <div key={o.id} className="bg-white rounded-xl border p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="font-bold text-sm">{o.num}</span>
-                  <Badge t={PO_STATUSES[o.status]} c={sc(o.status)}/>
-                  <span className="text-xs text-gray-500">{vM[o.vid]?.name} • {fmt(o.date)} • by {o.by}</span>
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2 mb-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-bold text-sm">{o.num}</span>
+                    <Badge t={PO_STATUSES[o.status]} c={sc(o.status)}/>
+                  </div>
+                  <span className="text-xs text-gray-500 sm:hidden">{vM[o.vid]?.name}</span>
+                  <span className="text-xs text-gray-500 hidden sm:inline">{vM[o.vid]?.name} • {fmt(o.date)} • by {o.by}</span>
                   <div className="flex-1"/>
-                  {o.status==="draft" && <>
-                    <Btn v="outline" s onClick={()=>setModal({type:"editPO",data:o})}>Edit</Btn>
-                    <Btn v="primary" s onClick={async()=>{setOrders(p=>p.map(x=>x.id===o.id?{...x,status:"sent_to_vendor"}:x));try{await db.updatePOStatus(o.id,"sent_to_vendor");}catch(e){console.warn("DB PO status failed:",e);}}}>✓ Mark Sent</Btn>
-                  </>}
-                  <Btn v="ghost" s onClick={()=>printPO(o)}>PDF</Btn>
+                  <div className="flex gap-2 flex-wrap">
+                    {o.status==="draft" && <>
+                      <Btn v="outline" s onClick={()=>setModal({type:"editPO",data:o})}>Edit</Btn>
+                      <Btn v="primary" s onClick={async()=>{setOrders(p=>p.map(x=>x.id===o.id?{...x,status:"sent_to_vendor"}:x));try{await db.updatePOStatus(o.id,"sent_to_vendor");}catch(e){console.warn("DB PO status failed:",e);}}}>✓ Mark Sent</Btn>
+                    </>}
+                    <Btn v="ghost" s onClick={()=>printPO(o)}>PDF</Btn>
+                  </div>
                 </div>
                 <div className="overflow-x-auto">
-                <table className="w-full text-xs min-w-[600px]">
-                  <thead className="bg-gray-50"><tr><th className="text-left px-3 py-1">Item</th><th className="px-3 py-1">Qty</th><th className="px-3 py-1">Unit</th><th className="px-3 py-1">Vendor</th><th className="px-3 py-1">Delivery</th><th className="px-3 py-1">Notes</th></tr></thead>
-                  <tbody>{o.lines.map((l,i)=><tr key={i} className="border-t"><td className="px-3 py-1 font-medium">{l.name}</td><td className="px-3 py-1 text-center">{l.qty}</td><td className="px-3 py-1 text-center text-gray-500">{l.unit}</td><td className="px-3 py-1">{l.vid && l.vid !== "unknown" ? vM[l.vid]?.name : <select className="w-full border rounded px-1 py-1 text-xs" value={l.vid||""} onChange={e=>{const vid=e.target.value;const vname=vendors.find(v=>v.id===vid)?.name||"";setOrders(p=>p.map(x=>x.id===o.id?{...x,lines:x.lines.map((ll,j)=>j===i?{...ll,vid,vname}:ll)}:x));}}><option value="">Select...</option>{vendors.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select>}</td><td className="px-3 py-1 text-gray-500">{fmt(l.delDate)}</td><td className="px-3 py-1 text-gray-400">{l.notes||"—"}</td></tr>)}</tbody>
+                <table className="w-full text-xs min-w-full sm:min-w-[600px]">
+                  <thead className="bg-gray-50"><tr><th className="text-left px-2 sm:px-3 py-1">Item</th><th className="hidden sm:table-cell px-3 py-1">Qty</th><th className="hidden md:table-cell px-3 py-1">Unit</th><th className="hidden lg:table-cell px-3 py-1">Vendor</th><th className="hidden xl:table-cell px-3 py-1">Delivery</th><th className="hidden 2xl:table-cell px-3 py-1">Notes</th></tr></thead>
+                  <tbody>{o.lines.map((l,i)=><tr key={i} className="border-t"><td className="px-2 sm:px-3 py-1 font-medium text-xs sm:text-sm">{l.name}</td><td className="hidden sm:table-cell px-3 py-1 text-center">{l.qty}</td><td className="hidden md:table-cell px-3 py-1 text-center text-gray-500">{l.unit}</td><td className="hidden lg:table-cell px-3 py-1">{l.vid && l.vid !== "unknown" ? vM[l.vid]?.name : <select className="w-full border rounded px-1 py-1 text-xs" value={l.vid||""} onChange={e=>{const vid=e.target.value;const vname=vendors.find(v=>v.id===vid)?.name||"";setOrders(p=>p.map(x=>x.id===o.id?{...x,lines:x.lines.map((ll,j)=>j===i?{...ll,vid,vname}:ll)}:x));}}><option value="">Select...</option>{vendors.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select>}</td><td className="hidden xl:table-cell px-3 py-1 text-gray-500 text-xs">{fmt(l.delDate)}</td><td className="hidden 2xl:table-cell px-3 py-1 text-gray-400 text-xs">{l.notes||"—"}</td></tr>)}</tbody>
                 </table>
                 </div>
               </div>
@@ -965,16 +972,16 @@ export default function App() {
     return (
       <Modal title={`Edit ${po.num}`} wide onClose={()=>setModal(null)}>
         <div className="overflow-x-auto mb-3">
-        <table className="w-full text-xs min-w-[600px]">
-          <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">Item</th><th className="px-3 py-2 w-24">Qty</th><th className="px-3 py-2 w-20">Unit</th><th className="px-3 py-2 w-28">Delivery</th><th className="px-3 py-2">Notes</th><th className="w-8"></th></tr></thead>
+        <table className="w-full text-xs min-w-full sm:min-w-[600px]">
+          <thead className="bg-gray-50"><tr><th className="text-left px-2 sm:px-3 py-2">Item</th><th className="hidden sm:table-cell px-3 py-2 w-24">Qty</th><th className="hidden md:table-cell px-3 py-2 w-20">Unit</th><th className="hidden lg:table-cell px-3 py-2 w-28">Delivery</th><th className="hidden xl:table-cell px-3 py-2">Notes</th><th className="px-2 sm:px-3 py-2 w-8"></th></tr></thead>
           <tbody>{lines.map((l,i)=>(
             <tr key={i} className="border-t">
-              <td className="px-3 py-2 font-medium">{l.name}</td>
-              <td className="px-3 py-1"><input type="number" min="0" step={qtyStep(l.unit)} className="w-full text-center border rounded px-2 py-2 text-sm min-w-[80px]" value={l.qty} onChange={e=>up(i,"qty",sanitizeQty(+e.target.value,l.unit))}/></td>
-              <td className="px-3 py-1"><select className="w-full border rounded px-1 py-1 text-xs" value={l.unit} onChange={e=>up(i,"unit",e.target.value)}>{UNITS.map(u=><option key={u}>{u}</option>)}</select></td>
-              <td className="px-3 py-1"><input type="date" className="w-full border rounded px-1 py-1 text-xs" value={l.delDate} onChange={e=>up(i,"delDate",e.target.value)}/></td>
-              <td className="px-3 py-1"><input type="text" className="w-full border rounded px-1 py-1 text-xs" value={l.notes} onChange={e=>up(i,"notes",e.target.value)}/></td>
-              <td className="px-3 py-1"><button onClick={()=>setLines(lines.filter((_,j)=>j!==i))} className="text-red-400 hover:text-red-600">×</button></td>
+              <td className="px-2 sm:px-3 py-2 font-medium text-xs sm:text-sm">{l.name}</td>
+              <td className="hidden sm:table-cell px-3 py-1"><input type="number" min="0" step={qtyStep(l.unit)} className="w-full text-center border rounded px-2 py-2 text-sm min-w-[80px]" value={l.qty} onChange={e=>up(i,"qty",sanitizeQty(+e.target.value,l.unit))}/></td>
+              <td className="hidden md:table-cell px-3 py-1"><select className="w-full border rounded px-1 py-1 text-xs" value={l.unit} onChange={e=>up(i,"unit",e.target.value)}>{UNITS.map(u=><option key={u}>{u}</option>)}</select></td>
+              <td className="hidden lg:table-cell px-3 py-1"><input type="date" className="w-full border rounded px-1 py-1 text-xs" value={l.delDate} onChange={e=>up(i,"delDate",e.target.value)}/></td>
+              <td className="hidden xl:table-cell px-3 py-1"><input type="text" className="w-full border rounded px-1 py-1 text-xs" value={l.notes} onChange={e=>up(i,"notes",e.target.value)}/></td>
+              <td className="px-2 sm:px-3 py-1"><button onClick={()=>setLines(lines.filter((_,j)=>j!==i))} className="text-red-400 hover:text-red-600">×</button></td>
             </tr>
           ))}</tbody>
         </table>
@@ -1016,11 +1023,11 @@ export default function App() {
                     {g.vendorInvNum && <Badge t="Mapped" c="green"/>}
                   </div>
                   <div className="overflow-x-auto">
-                  <table className="w-full text-xs min-w-[600px]">
-                    <thead className="bg-gray-50"><tr><th className="text-left px-3 py-1">Item</th><th className="px-3 py-1">Ordered</th><th className="px-3 py-1">Received</th><th className="px-3 py-1">Unit</th><th className="px-3 py-1">Discrepancy</th></tr></thead>
+                  <table className="w-full text-xs min-w-full sm:min-w-[600px]">
+                    <thead className="bg-gray-50"><tr><th className="text-left px-2 sm:px-3 py-1">Item</th><th className="hidden sm:table-cell px-3 py-1">Ordered</th><th className="px-2 sm:px-3 py-1">Received</th><th className="hidden md:table-cell px-3 py-1">Unit</th><th className="hidden lg:table-cell px-3 py-1">Discrepancy</th></tr></thead>
                     <tbody>{g.lines.map((l,i)=>{
                       const diff = l.qtyRec !== l.qty;
-                      return <tr key={i} className={`border-t ${diff?"bg-amber-50":""}`}><td className="px-3 py-1 font-medium">{l.name}</td><td className="px-3 py-1 text-center">{l.qty}</td><td className="px-3 py-1 text-center">{l.qtyRec}</td><td className="px-3 py-1 text-center text-gray-500">{l.unit}</td><td className="px-3 py-1 text-gray-500">{diff?(l.discReason||"—"):"—"}</td></tr>;
+                      return <tr key={i} className={`border-t ${diff?"bg-amber-50":""}`}><td className="px-2 sm:px-3 py-1 font-medium text-xs sm:text-sm">{l.name}</td><td className="hidden sm:table-cell px-3 py-1 text-center">{l.qty}</td><td className="px-2 sm:px-3 py-1 text-center">{l.qtyRec}</td><td className="hidden md:table-cell px-3 py-1 text-center text-gray-500">{l.unit}</td><td className="hidden lg:table-cell px-3 py-1 text-gray-500 text-xs">{diff?(l.discReason||"—"):"—"}</td></tr>;
                     })}</tbody>
                   </table>
                   </div>
@@ -1050,19 +1057,19 @@ export default function App() {
       <Modal title={`Credit Note for ${grn.grnNum}`} wide onClose={()=>setModal(null)}>
         <p className="text-sm text-gray-500 mb-3">{v?.name} • Vendor Invoice: {grn.vendorInvNum||"N/A"}</p>
         <div className="overflow-x-auto mb-3">
-        <table className="w-full text-xs min-w-[600px]">
-          <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">Item</th><th className="px-3 py-2">Received</th><th className="px-3 py-2 w-24">Return Qty</th><th className="px-3 py-2">Price</th><th className="px-3 py-2">Credit Amt</th><th className="text-left px-3 py-2">Reason</th></tr></thead>
+        <table className="w-full text-xs min-w-full sm:min-w-[600px]">
+          <thead className="bg-gray-50"><tr><th className="text-left px-2 sm:px-3 py-2">Item</th><th className="hidden sm:table-cell px-3 py-2">Received</th><th className="px-2 sm:px-3 py-2 w-20 sm:w-24">Return</th><th className="hidden md:table-cell px-3 py-2">Price</th><th className="hidden lg:table-cell px-3 py-2">Credit Amt</th><th className="hidden xl:table-cell text-left px-3 py-2">Reason</th></tr></thead>
           <tbody>{cnLines.map((l,i)=>{
             const price = inv?.lines?.find(il=>il.iid===l.iid)?.price || 0;
             const creditAmt = l.returnQty * price;
             return (
               <tr key={i} className={`border-t ${l.returnQty>0?"bg-red-50":""}`}>
-                <td className="px-3 py-2 font-medium">{l.name}</td>
-                <td className="px-3 py-2 text-center">{l.qtyRec}</td>
-                <td className="px-3 py-1"><input type="number" min="0" max={l.qtyRec} step={qtyStep(l.unit)} className="w-full text-center border rounded px-2 py-2 text-sm min-w-[80px]" value={l.returnQty} onChange={e=>up(i,"returnQty",sanitizeQty(+e.target.value,l.unit))}/></td>
-                <td className="px-3 py-2 text-right">{price?R(price):"—"}</td>
-                <td className="px-3 py-2 text-right text-red-600 font-medium">{creditAmt>0?R(creditAmt):"—"}</td>
-                <td className="px-3 py-1">{l.returnQty>0?<input type="text" className="w-full border rounded px-2 py-1 text-xs" placeholder="Reason..." value={l.reason} onChange={e=>up(i,"reason",e.target.value)}/>:<span className="text-gray-300">—</span>}</td>
+                <td className="px-2 sm:px-3 py-2 font-medium text-xs sm:text-sm">{l.name}</td>
+                <td className="hidden sm:table-cell px-3 py-2 text-center">{l.qtyRec}</td>
+                <td className="px-2 sm:px-3 py-1"><input type="number" min="0" max={l.qtyRec} step={qtyStep(l.unit)} className="w-full text-center border rounded px-2 py-2 text-xs sm:text-sm min-w-[60px]" value={l.returnQty} onChange={e=>up(i,"returnQty",sanitizeQty(+e.target.value,l.unit))}/></td>
+                <td className="hidden md:table-cell px-3 py-2 text-right">{price?R(price):"—"}</td>
+                <td className="hidden lg:table-cell px-3 py-2 text-right text-red-600 font-medium text-xs">{creditAmt>0?R(creditAmt):"—"}</td>
+                <td className="hidden xl:table-cell px-3 py-1">{l.returnQty>0?<input type="text" className="w-full border rounded px-2 py-1 text-xs" placeholder="Reason..." value={l.reason} onChange={e=>up(i,"reason",e.target.value)}/>:<span className="text-gray-300">—</span>}</td>
               </tr>
             );
           })}</tbody>
@@ -1480,9 +1487,9 @@ export default function App() {
           <div className={`w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold ${isM?"bg-purple-500":"bg-orange-400"}`}>{user.name[0]}</div>
           <button onClick={()=>setUser(null)} className="text-xs text-gray-400 hover:text-red-500">Logout</button>
         </div>
-        <div className="max-w-6xl mx-auto px-4 flex gap-0.5 overflow-x-auto">
+        <div className="max-w-6xl mx-auto px-4 flex gap-0.5 overflow-x-auto overflow-y-hidden scrollbar-hide">
           {tabs.map(t=>(
-            <button key={t.id} onClick={()=>setTab(t.id)} className={`px-3 py-2 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${tab===t.id?"border-orange-500 text-orange-600":"border-transparent text-gray-500 hover:text-gray-700"}`}>
+            <button key={t.id} onClick={()=>setTab(t.id)} className={`px-2 sm:px-3 py-2 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${tab===t.id?"border-orange-500 text-orange-600":"border-transparent text-gray-500 hover:text-gray-700"}`}>
               {t.l}{t.b>0&&<span className="ml-1 px-1.5 py-0.5 text-xs rounded-full bg-red-100 text-red-700">{t.b}</span>}
             </button>
           ))}
