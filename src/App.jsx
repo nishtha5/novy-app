@@ -354,7 +354,7 @@ const Modal = ({title, onClose, children, wide}) => (
   </div>
 );
 
-const PeriodBar = ({dateFrom, dateTo, setDateFrom, setDateTo, period, setPeriod}) => {
+const FilterBar = ({dateFrom, dateTo, setDateFrom, setDateTo, period, setPeriod, vendors, fV, setFV}) => {
   const set = (p) => {
     setPeriod(p); const t = td();
     if(p==="today"){setDateFrom(t);setDateTo(t);}
@@ -366,14 +366,26 @@ const PeriodBar = ({dateFrom, dateTo, setDateFrom, setDateTo, period, setPeriod}
   };
   return (
     <div className="flex flex-wrap gap-2 items-center">
-      <div className="flex gap-1">
-        {["all","today","week","month","quarter","year"].map(p=>(
-          <button key={p} onClick={()=>set(p==="all"?"":p)} className={`px-3 py-1 rounded-full text-xs font-medium ${(period===p||(p==="all"&&!period))?"bg-orange-500 text-white":"bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>{p==="all"?"All":p[0].toUpperCase()+p.slice(1)}</button>
-        ))}
-      </div>
-      <input type="date" className="border rounded-lg px-2 py-1 text-xs" value={dateFrom} onChange={e=>{setDateFrom(e.target.value);setPeriod("");}}/>
-      <span className="text-gray-400 text-xs">to</span>
-      <input type="date" className="border rounded-lg px-2 py-1 text-xs" value={dateTo} onChange={e=>{setDateTo(e.target.value);setPeriod("");}}/>
+      {vendors && setFV && (
+        <select className="border rounded-lg px-2 py-1.5 text-xs" value={fV||""} onChange={e=>setFV(e.target.value)}>
+          <option value="">All vendors</option>
+          {vendors.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
+        </select>
+      )}
+      <select className="border rounded-lg px-2 py-1.5 text-xs" value={period||""} onChange={e=>set(e.target.value)}>
+        <option value="">All time</option>
+        <option value="today">Today</option>
+        <option value="week">Last 7 days</option>
+        <option value="month">Last 30 days</option>
+        <option value="quarter">Last 90 days</option>
+        <option value="year">Last year</option>
+        <option value="custom">Custom range</option>
+      </select>
+      {period==="custom" && <>
+        <input type="date" className="border rounded-lg px-2 py-1 text-xs" value={dateFrom} onChange={e=>setDateFrom(e.target.value)}/>
+        <span className="text-gray-400 text-xs">to</span>
+        <input type="date" className="border rounded-lg px-2 py-1 text-xs" value={dateTo} onChange={e=>setDateTo(e.target.value)}/>
+      </>}
     </div>
   );
 };
@@ -659,10 +671,15 @@ export default function App() {
   // RECEIVING (Staff) — only POs with status "sent_to_vendor"
   // ═════════════════════════════════════════
   const Receiving = () => {
-    const pending = orders.filter(o=>o.status==="sent_to_vendor" || o.status==="partially_received");
+    const [fV, setFV] = useState("");
+    const [dateFrom, setDateFrom] = useState(""); const [dateTo, setDateTo] = useState(""); const [period, setPeriod] = useState("");
+    const pending = orders.filter(o=>{if(o.status!=="sent_to_vendor"&&o.status!=="partially_received")return false;if(fV&&o.vid!==fV)return false;if(dateFrom&&o.date<dateFrom)return false;if(dateTo&&o.date>dateTo)return false;return true;});
     return (
       <div className="space-y-4">
-        <p className="text-sm font-semibold text-gray-700">Receive Deliveries ({pending.length} pending)</p>
+        <div className="flex items-center gap-3 flex-wrap">
+          <p className="text-sm font-semibold text-gray-700">Receive Deliveries ({pending.length} pending)</p>
+          <FilterBar {...{dateFrom,dateTo,setDateFrom,setDateTo,period,setPeriod,vendors,fV,setFV}}/>
+        </div>
         {pending.length===0 && <div className="bg-white rounded-xl border p-6 text-center text-gray-400 text-sm">No POs sent to vendor yet — awaiting purchase team action</div>}
         {pending.map(po=>{
           const existingGrns = grns.filter(g=>g.poId===po.id);
@@ -677,7 +694,11 @@ export default function App() {
                   <p className="text-xs text-gray-500">{fmt(po.date)} • <Badge t={PO_STATUSES[po.status]} c={sc(po.status)}/></p>
                   {existingGrns.length>0 && <p className="text-xs text-green-600 mt-1">{existingGrns.length} GRN(s) already created</p>}
                 </div>
-                <Btn v="outline" s onClick={()=>setModal({type:"receive",data:po})} disabled={remaining.length===0}>{remaining.length>0?"Receive":"Fully Received"}</Btn>
+                <div className="flex gap-2">
+                  <Btn v="ghost" s onClick={()=>printPO(po)}>PDF</Btn>
+                  {po.status==="partially_received" && <Btn v="danger" s onClick={async()=>{if(!confirm("Close this PO? Remaining items won't be received."))return;setOrders(p=>p.map(x=>x.id===po.id?{...x,status:"received"}:x));try{await db.updatePOStatus(po.id,"received");}catch(e){console.warn("DB close PO failed:",e);}}}>Close PO</Btn>}
+                  <Btn v="outline" s onClick={()=>setModal({type:"receive",data:po})} disabled={remaining.length===0}>{remaining.length>0?"Receive":"Fully Received"}</Btn>
+                </div>
               </div>
               <div className="overflow-x-auto">
               <table className="w-full text-xs min-w-full sm:min-w-[600px]">
@@ -736,7 +757,7 @@ export default function App() {
           })}
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
-          <div><label className="text-xs text-gray-500">Sign-off *</label><input className="w-full border rounded-lg px-3 py-2 text-sm" value={signOff} onChange={e=>setSignOff(e.target.value)}/></div>
+          <div><label className="text-xs text-gray-500">Sign-off</label><div className="w-full border rounded-lg px-3 py-2 text-sm bg-gray-50 text-gray-600">{signOff}</div></div>
           <div><label className="text-xs text-gray-500">Notes</label><input className="w-full border rounded-lg px-3 py-2 text-sm" placeholder="Optional..." value={notes} onChange={e=>setNotes(e.target.value)}/></div>
         </div>
         <div className="flex justify-end gap-2">
@@ -902,7 +923,7 @@ export default function App() {
 
     return (
       <div className="space-y-4">
-        <PeriodBar {...{dateFrom,dateTo,setDateFrom,setDateTo,period,setPeriod}}/>
+        <FilterBar {...{dateFrom,dateTo,setDateFrom,setDateTo,period,setPeriod}}/>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <Stat label="Total POs" value={fOrders.length}/>
           <Stat label="Draft" value={draftC} accent="yellow"/>
@@ -937,14 +958,15 @@ export default function App() {
   const MgrPOs = () => {
     const [fV, setFV] = useState("");
     const [fS, setFS] = useState("");
-    const shown = orders.filter(o=>{if(fV&&o.vid!==fV)return false;if(fS&&o.status!==fS)return false;return true;});
+    const [dateFrom, setDateFrom] = useState(""); const [dateTo, setDateTo] = useState(""); const [period, setPeriod] = useState("");
+    const shown = orders.filter(o=>{if(fV&&o.vid!==fV)return false;if(fS&&o.status!==fS)return false;if(dateFrom&&o.date<dateFrom)return false;if(dateTo&&o.date>dateTo)return false;return true;});
 
     return (
       <div className="space-y-4">
         <div className="flex items-center gap-3 flex-wrap">
-          <p className="text-sm font-semibold text-gray-700">Purchase Orders ({orders.length})</p>
-          <select className="border rounded-lg px-2 py-1 text-xs" value={fV} onChange={e=>setFV(e.target.value)}><option value="">All vendors</option>{vendors.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select>
-          <select className="border rounded-lg px-2 py-1 text-xs" value={fS} onChange={e=>setFS(e.target.value)}><option value="">All statuses</option>{Object.entries(PO_STATUSES).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>
+          <p className="text-sm font-semibold text-gray-700">Purchase Orders ({shown.length})</p>
+          <FilterBar {...{dateFrom,dateTo,setDateFrom,setDateTo,period,setPeriod,vendors,fV,setFV}}/>
+          <select className="border rounded-lg px-2 py-1.5 text-xs" value={fS} onChange={e=>setFS(e.target.value)}><option value="">All statuses</option>{Object.entries(PO_STATUSES).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>
           <div className="flex-1"/>
           <Btn v="outline" s onClick={()=>dlCSV("pos.csv",["PO","Date","Vendor","By","Status","Items"],shown.map(o=>[o.num,o.date,vM[o.vid]?.name||"",o.by,PO_STATUSES[o.status],o.lines.length]))}>↓ CSV</Btn>
         </div>
@@ -1018,12 +1040,20 @@ export default function App() {
   // MANAGER: GRNs
   // ═════════════════════════════════════════
   const MgrGRNs = () => {
+    const [fV, setFV] = useState("");
+    const [dateFrom, setDateFrom] = useState(""); const [dateTo, setDateTo] = useState(""); const [period, setPeriod] = useState("");
+    const shown = grns.filter(g=>{if(fV&&g.vid!==fV)return false;if(dateFrom&&g.date<dateFrom)return false;if(dateTo&&g.date>dateTo)return false;return true;});
     return (
       <div className="space-y-4">
-        <p className="text-sm font-semibold text-gray-700">Goods Receipt Notes ({grns.length})</p>
-        {grns.length===0?<div className="bg-white rounded-xl border p-6 text-center text-gray-400 text-sm">No GRNs yet</div>:(
+        <div className="flex items-center gap-3 flex-wrap">
+          <p className="text-sm font-semibold text-gray-700">Goods Receipt Notes ({shown.length})</p>
+          <FilterBar {...{dateFrom,dateTo,setDateFrom,setDateTo,period,setPeriod,vendors,fV,setFV}}/>
+          <div className="flex-1"/>
+          <Btn v="outline" s onClick={()=>dlCSV("grns.csv",["GRN","PO","Vendor","Date","Received By","Discrepancies","Vendor Inv#","Items"],shown.map(g=>[g.grnNum,g.poNum,vM[g.vid]?.name||"",g.date,g.signOff,g.hasDisc?"Yes":"No",g.vendorInvNum||"",g.lines.map(l=>`${l.name}:${l.qtyRec}${l.unit}`).join("; ")]))}>↓ CSV</Btn>
+        </div>
+        {shown.length===0?<div className="bg-white rounded-xl border p-6 text-center text-gray-400 text-sm">No GRNs yet</div>:(
           <div className="space-y-3">
-            {grns.slice().reverse().map(g=>{
+            {shown.slice().reverse().map(g=>{
               const v = vM[g.vid];
               return (
                 <div key={g.id} className="bg-white rounded-xl border p-4">
@@ -1122,14 +1152,23 @@ export default function App() {
   // MANAGER: PRICING
   // ═════════════════════════════════════════
   const Pricing = () => {
+    const [fV, setFV] = useState("");
+    const [dateFrom, setDateFrom] = useState(""); const [dateTo, setDateTo] = useState(""); const [period, setPeriod] = useState("");
     const unpricedGrns = grns.filter(g => {
       const po = orders.find(o=>o.id===g.poId);
-      return po && (po.status==="received" || po.status==="partially_received");
+      if(!(po && (po.status==="received" || po.status==="partially_received"))) return false;
+      if(fV&&g.vid!==fV) return false;
+      if(dateFrom&&g.date<dateFrom) return false;
+      if(dateTo&&g.date>dateTo) return false;
+      return true;
     });
 
     return (
       <div className="space-y-4">
-        <p className="text-sm font-semibold text-gray-700">Pricing ({unpricedGrns.length} GRNs to price)</p>
+        <div className="flex items-center gap-3 flex-wrap">
+          <p className="text-sm font-semibold text-gray-700">Pricing ({unpricedGrns.length} GRNs to price)</p>
+          <FilterBar {...{dateFrom,dateTo,setDateFrom,setDateTo,period,setPeriod,vendors,fV,setFV}}/>
+        </div>
         {unpricedGrns.length===0?<div className="bg-white rounded-xl border p-6 text-center text-gray-400 text-sm">No GRNs to price</div>:(
           unpricedGrns.map(g => <PricingCard key={g.id} grn={g}/>)
         )}
@@ -1313,7 +1352,7 @@ export default function App() {
             </div>
           </div>
         </div>
-        <PeriodBar {...{dateFrom,dateTo,setDateFrom,setDateTo,period,setPeriod}}/>
+        <FilterBar {...{dateFrom,dateTo,setDateFrom,setDateTo,period,setPeriod}}/>
         {expanded===null&&(
           <div className="bg-white rounded-xl border overflow-x-auto">
             <table className="w-full text-xs min-w-[600px]">
@@ -1371,7 +1410,9 @@ export default function App() {
   // ═════════════════════════════════════════
   const Payables = () => {
     const [expandedVid, setExpandedVid] = useState(null);
-    const open = apData.filter(i=>i.balance>0);
+    const [fV, setFV] = useState("");
+    const [dateFrom, setDateFrom] = useState(""); const [dateTo, setDateTo] = useState(""); const [period, setPeriod] = useState("");
+    const open = apData.filter(i=>{if(i.balance<=0)return false;if(fV&&i.vid!==fV)return false;if(dateFrom&&i.date<dateFrom)return false;if(dateTo&&i.date>dateTo)return false;return true;});
     const tot = open.reduce((s,i)=>s+i.balance,0);
     const od = open.filter(i=>i.overdue);
 
@@ -1413,8 +1454,10 @@ export default function App() {
 
     return (
       <div className="space-y-4">
-        <div className="flex flex-wrap justify-between items-center gap-2">
+        <div className="flex flex-wrap items-center gap-3">
           <p className="text-sm font-semibold text-gray-700">Payables</p>
+          <FilterBar {...{dateFrom,dateTo,setDateFrom,setDateTo,period,setPeriod,vendors,fV,setFV}}/>
+          <div className="flex-1"/>
           <div className="flex gap-2">
             <Btn v="outline" s onClick={exportPayablesPDF}>↓ PDF</Btn>
             <Btn v="outline" s onClick={exportPayablesCSV}>↓ Excel</Btn>
@@ -1468,14 +1511,21 @@ export default function App() {
   // ═════════════════════════════════════════
   // MANAGER: CREDIT NOTES LIST
   // ═════════════════════════════════════════
-  const CreditNotesList = () => (
+  const CreditNotesList = () => {
+    const [fV, setFV] = useState("");
+    const [dateFrom, setDateFrom] = useState(""); const [dateTo, setDateTo] = useState(""); const [period, setPeriod] = useState("");
+    const shown = creditNotes.filter(cn=>{if(fV&&cn.vid!==fV)return false;if(dateFrom&&cn.date<dateFrom)return false;if(dateTo&&cn.date>dateTo)return false;return true;});
+    return (
     <div className="space-y-3">
-      <p className="text-sm font-semibold text-gray-700">Credit Notes ({creditNotes.length})</p>
-      {creditNotes.length===0?<div className="bg-white rounded-xl border p-6 text-center text-gray-400 text-sm">No credit notes yet — create from GRNs tab</div>:(
+      <div className="flex items-center gap-3 flex-wrap">
+        <p className="text-sm font-semibold text-gray-700">Credit Notes ({shown.length})</p>
+        <FilterBar {...{dateFrom,dateTo,setDateFrom,setDateTo,period,setPeriod,vendors,fV,setFV}}/>
+      </div>
+      {shown.length===0?<div className="bg-white rounded-xl border p-6 text-center text-gray-400 text-sm">No credit notes yet — create from GRNs tab</div>:(
         <div className="bg-white rounded-xl border overflow-x-auto">
           <table className="w-full text-xs min-w-[600px]">
             <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">CN #</th><th className="text-left px-3 py-2">GRN</th><th className="text-left px-3 py-2">Vendor</th><th className="px-3 py-2">Date</th><th className="text-left px-3 py-2">Reason</th><th className="text-right px-3 py-2">Base</th><th className="text-right px-3 py-2">GST</th><th className="text-right px-3 py-2">Total</th></tr></thead>
-            <tbody>{creditNotes.slice().reverse().map(cn=>(
+            <tbody>{shown.slice().reverse().map(cn=>(
               <tr key={cn.id} className="border-t hover:bg-gray-50">
                 <td className="px-3 py-2 font-medium">{cn.num}</td>
                 <td className="px-3 py-2 text-gray-500">{cn.grnNum}</td>
@@ -1492,6 +1542,7 @@ export default function App() {
       )}
     </div>
   );
+  };
 
   // ═════════════════════════════════════════
   // NAVIGATION & RENDER
@@ -1502,7 +1553,6 @@ export default function App() {
     {id:"mgr_pos",l:"POs",b:orders.filter(o=>o.status==="draft").length},
     {id:"mgr_grns",l:"GRNs"},
     {id:"mgr_pricing",l:"Pricing",b:grns.filter(g=>{const po=orders.find(o=>o.id===g.poId);return po&&(po.status==="received"||po.status==="partially_received");}).length},
-    {id:"mgr_invoices",l:"Invoices"},
     {id:"mgr_ledger",l:"Vendor Ledger"},
     {id:"mgr_payables",l:"Payables",b:apData.filter(i=>i.overdue).length},
     {id:"mgr_cn",l:"Credit Notes",b:creditNotes.length||0}
@@ -1536,7 +1586,6 @@ export default function App() {
         {tab==="mgr_pos"&&isM&&<MgrPOs/>}
         {tab==="mgr_grns"&&isM&&<MgrGRNs/>}
         {tab==="mgr_pricing"&&isM&&<Pricing/>}
-        {tab==="mgr_invoices"&&isM&&<MgrInvoices/>}
         {tab==="mgr_ledger"&&isM&&<Ledger/>}
         {tab==="mgr_payables"&&isM&&<Payables/>}
         {tab==="mgr_cn"&&isM&&<CreditNotesList/>}
