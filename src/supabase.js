@@ -188,6 +188,8 @@ export const createPurchaseOrder = async (po, staffId) => {
     po_number: poNumber, vendor_id: vendorId,
     placed_by_name: po.by || "", status: po.status || "draft",
   };
+  // Send the local UUID so Supabase uses it (keeps local & remote IDs in sync)
+  if (isUUID(po.id)) body.id = po.id;
   const staffUUID = toUUID(staffId);
   if (staffUUID) body.placed_by = staffUUID;
 
@@ -233,11 +235,14 @@ export const createGRN = async (grn) => {
   if (!poId) throw new Error("GRN: PO was not synced to database yet");
 
   const grnNumber = (await rpc("generate_grn_number")) || grn.grnNum;
-  const rows = await post("grns", {
+  const body = {
     grn_number: grnNumber, po_id: poId, po_number: grn.poNum,
     vendor_id: vendorId, received_by_name: grn.signOff, sign_off_name: grn.signOff,
     has_discrepancy: grn.hasDisc, vendor_invoice_number: grn.vendorInvNum || "", notes: grn.notes || "",
-  });
+  };
+  // Send the local UUID so Supabase uses it (keeps IDs in sync for FK references)
+  if (isUUID(grn.id)) body.id = grn.id;
+  const rows = await post("grns", body);
   const d = rows[0];
 
   const lines = grn.lines.filter(l => isUUID(l.iid)).map((l) => ({
@@ -291,6 +296,7 @@ export const createInvoice = async (inv) => {
     cgst: inv.cgst, sgst: inv.sgst, igst: inv.igst,
     total_with_gst: inv.totalGST, created_by_name: inv.createdBy || "",
   };
+  if (isUUID(inv.id)) body.id = inv.id;
   if (grnId) body.grn_id = grnId;
 
   const rows = await post("invoices", body);
@@ -321,11 +327,13 @@ export const createPayment = async (payment) => {
   if (!invoiceId) throw new Error("Payment: invoice not synced to DB");
   if (!vendorId) throw new Error("Payment: vendor ID is not valid");
 
-  const rows = await post("payments", {
+  const body = {
     invoice_id: invoiceId, vendor_id: vendorId, amount: payment.amount,
     payment_date: payment.date, method: payment.method,
     reference_number: payment.ref, recorded_by_name: payment.by,
-  });
+  };
+  if (isUUID(payment.id)) body.id = payment.id;
+  const rows = await post("payments", body);
   return { ...payment, id: rows[0].id };
 };
 
@@ -357,6 +365,7 @@ export const createCreditNote = async (cn) => {
     reason: cn.reason, base_total: cn.base, cgst: cn.cgst, sgst: cn.sgst,
     igst: cn.igst, total_with_gst: cn.totalGST, created_by_name: cn.createdBy || "",
   };
+  if (isUUID(cn.id)) body.id = cn.id;
   const grnId = toUUID(cn.grnId);
   const invId = toUUID(cn.invId);
   if (grnId) body.grn_id = grnId;
