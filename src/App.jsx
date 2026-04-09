@@ -32,7 +32,13 @@ const ddmmyyyy = (d) => { const p=d.split("-"); return p[2]+p[1]+p[0]; }; // 202
 function genNum(prefix, date, existing) {
   const ds = ddmmyyyy(date);
   const same = existing.filter(x => x.num?.includes(`${prefix}-${ds}-`));
-  const seq = String(same.length + 1).padStart(3, "0");
+  // Extract max sequence number from existing to avoid collisions
+  let maxSeq = same.length;
+  same.forEach(x => {
+    const m = x.num?.match(new RegExp(`${prefix}-${ds}-(\\d+)`));
+    if (m) maxSeq = Math.max(maxSeq, parseInt(m[1], 10));
+  });
+  const seq = String(maxSeq + 1).padStart(3, "0");
   return `${prefix}-${ds}-${seq}`;
 }
 
@@ -845,6 +851,8 @@ export default function App() {
         setPayments(pay);
         setPriceHist(ph);
         setDbReady(true);
+        // Run diagnostics in background
+        db.diagnose().then(r => console.log("[novy] DB diagnostics:", r)).catch(() => {});
       } catch (err) {
         console.warn("Supabase load failed, using SEED data:", err);
         if (!cancelled) { setDbError(err.message); setDbReady(false); }
@@ -861,8 +869,8 @@ export default function App() {
     const item = items.find(i=>i.id===iid);
     if(item?.vid && vM[item.vid]) return vM[item.vid];
     // Fallback: latest vendor from price history
-    const latest = priceHist.filter(p=>p.itemId===iid).sort((a,b)=>(b.date||"").localeCompare(a.date||""))[0];
-    if(latest?.vendorId && vM[latest.vendorId]) return vM[latest.vendorId];
+    const latest = priceHist.filter(p=>p.iid===iid).sort((a,b)=>(b.date||"").localeCompare(a.date||""))[0];
+    if(latest?.vid && vM[latest.vid]) return vM[latest.vid];
     return null;
   }, [items,vM,priceHist]);
 
@@ -988,7 +996,7 @@ export default function App() {
           const newPO = {id:uid(), num, date:td(), by:user.name, status:"draft", vid, lines:vLines, total:0};
           setOrders(p=>[...p, newPO]);
           // Persist to Supabase
-          try { await db.createPurchaseOrder(newPO, user.id); notify("Order saved"); } catch(e) { notify("Order not synced — saved locally", false); }
+          try { await db.createPurchaseOrder(newPO, user.id); notify("Order saved"); } catch(e) { console.error("[novy] PO create error:", e.message); notify(e.message?.includes("vendor") ? "Select a vendor for all items" : `Sync error: ${e.message?.slice(0,80)}`, false); }
         }
       }
       setLines([]); setSearch(""); setActiveCat("");
@@ -1250,7 +1258,12 @@ export default function App() {
                 if(editId){setStaff(p=>p.map(s=>s.id===editId?{...s,...staffObj}:s));
                 }else{setStaff(p=>[...p,staffObj]);}
                 clearEdit();
-                try { await db.upsertStaff(staffObj); notify("Staff saved"); } catch(e) { notify("Staff not synced", false); }
+                try {
+                  const saved = await db.upsertStaff(staffObj);
+                  // If Supabase returned a new UUID (SEED id was replaced), update local state
+                  if(saved.id !== staffObj.id) setStaff(p=>p.map(s=>s.id===staffObj.id?{...s,id:saved.id}:s));
+                  notify("Staff saved");
+                } catch(e) { notify("Staff not synced", false); }
               }}>{editId?"Save":"+ Add"}</Btn>
             </div>
           </div>
@@ -1285,7 +1298,7 @@ export default function App() {
             </div>
             <div className="flex justify-end gap-2 mt-2">
               {editId && <Btn v="ghost" s onClick={clearEdit}>Cancel</Btn>}
-              <Btn disabled={!nI.name} s onClick={async()=>{const itemObj={...nI,id:editId||uid()};if(editId){setItems(p=>p.map(i=>i.id===editId?itemObj:i));setEditId(null);}else{setItems(p=>[...p,itemObj]);}setNI({name:"",unit:"kg",hsn:"",gst:0,vid:"",category:""});try{await db.upsertItem(itemObj);notify("Item saved");}catch(e){notify("Item not synced",false);}}}>{editId?"Save":"+ Add"}</Btn>
+              <Btn disabled={!nI.name} s onClick={async()=>{const itemObj={...nI,id:editId||uid()};if(editId){setItems(p=>p.map(i=>i.id===editId?itemObj:i));setEditId(null);}else{setItems(p=>[...p,itemObj]);}setNI({name:"",unit:"kg",hsn:"",gst:0,vid:"",category:""});try{const saved=await db.upsertItem(itemObj);if(saved.id!==itemObj.id)setItems(p=>p.map(i=>i.id===itemObj.id?{...i,id:saved.id}:i));notify("Item saved");}catch(e){notify("Item not synced",false);}}}>{editId?"Save":"+ Add"}</Btn>
             </div>
           </div>
           <div className="bg-white rounded-xl border overflow-x-auto">
@@ -1313,7 +1326,7 @@ export default function App() {
             </div>
             <div className="flex justify-end gap-2 mt-2">
               {editId && <Btn v="ghost" s onClick={clearEdit}>Cancel</Btn>}
-              <Btn disabled={!nV.name} s onClick={async()=>{const vObj={...nV,id:editId||uid()};if(editId){setVendors(p=>p.map(v=>v.id===editId?vObj:v));setEditId(null);}else{setVendors(p=>[...p,vObj]);}setNV({name:"",contact:"",phone:"",gstin:"",state:"Maharashtra",intra:true,terms:30,category:""});try{await db.upsertVendor(vObj);notify("Vendor saved");}catch(e){notify("Vendor not synced",false);}}}>{editId?"Save":"+ Add"}</Btn>
+              <Btn disabled={!nV.name} s onClick={async()=>{const vObj={...nV,id:editId||uid()};if(editId){setVendors(p=>p.map(v=>v.id===editId?vObj:v));setEditId(null);}else{setVendors(p=>[...p,vObj]);}setNV({name:"",contact:"",phone:"",gstin:"",state:"Maharashtra",intra:true,terms:30,category:""});try{const saved=await db.upsertVendor(vObj);if(saved.id!==vObj.id)setVendors(p=>p.map(v=>v.id===vObj.id?{...v,id:saved.id}:v));notify("Vendor saved");}catch(e){notify("Vendor not synced",false);}}}>{editId?"Save":"+ Add"}</Btn>
             </div>
           </div>
           <div className="bg-white rounded-xl border overflow-x-auto">
@@ -1598,7 +1611,7 @@ export default function App() {
     const po = orders.find(o=>o.id===grn.poId);
     const vendor = vM[grn.vid];
     const [pL, setPL] = useState(grn.lines.map(l=>{
-      const prev = priceHist.filter(p=>p.itemId===l.iid&&p.vendorId===grn.vid).sort((a,b)=>b.date?.localeCompare(a.date))[0];
+      const prev = priceHist.filter(p=>p.iid===l.iid&&p.vid===grn.vid).sort((a,b)=>(b.date||"").localeCompare(a.date||""))[0];
       return{...l, price:prev?.price||0, prevPrice:prev?.price||0, gst:iM[l.iid]?.gst||0, hsn:iM[l.iid]?.hsn||"", totalOverride:null};
     }));
     const [extraLabel, setExtraLabel] = useState("");
@@ -1615,8 +1628,8 @@ export default function App() {
       const invNum = genNum("INV", td(), invoices);
       const priceEntries = pL.map(l=>({iid:l.iid,vid:grn.vid,name:l.name,vname:vendor?.name,price:l.price,grnNum:grn.grnNum,invNum}));
       pL.forEach(l=>{
-        const prevEntry = priceHist.filter(p=>p.itemId===l.iid&&p.vendorId===grn.vid).sort((a,b)=>b.date?.localeCompare(a.date))[0];
-        setPriceHist(p=>[...p,{id:uid(),itemId:l.iid,vendorId:grn.vid,itemName:l.name,vendorName:vendor?.name,price:l.price,prevPrice:prevEntry?.price||0,date:td(),grnNum:grn.grnNum,invNum}]);
+        const prevEntry = priceHist.filter(p=>p.iid===l.iid&&p.vid===grn.vid).sort((a,b)=>(b.date||"").localeCompare(a.date||""))[0];
+        setPriceHist(p=>[...p,{id:uid(),iid:l.iid,vid:grn.vid,name:l.name,vname:vendor?.name,price:l.price,prevPrice:prevEntry?.price||0,date:td(),grnNum:grn.grnNum,invNum}]);
         // Update item's default vendor and GST
         setItems(p=>p.map(it=>it.id===l.iid?{...it,vid:grn.vid,gst:l.gst}:it));
         try{db.upsertItem({id:l.iid,name:l.name,unit:l.unit,vid:grn.vid,gst:l.gst});}catch(e){}
