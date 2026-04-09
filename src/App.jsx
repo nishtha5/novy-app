@@ -1787,6 +1787,17 @@ export default function App() {
   // ═════════════════════════════════════════
   // MANAGER: VENDOR LEDGER (Tally-style)
   // ═════════════════════════════════════════
+  const COMPANY = {name:"MAVEN CREATORS AND HOSPITALITY LLP",addr:"NOVY HQ 27 B660 SHUSHANT LOK PH-1",city:"GURUGRAM SEC-27 HARYANA 122001"};
+
+  // Helper: get GRN line details for an invoice (qty ordered, received, discrepancy)
+  const getGrnDetails = (inv) => {
+    const grn = grns.find(g=>g.id===inv.grnId);
+    if(!grn) return {};
+    const map = {};
+    grn.lines.forEach(l => { map[l.iid] = l; });
+    return map;
+  };
+
   const Ledger = () => {
     const [selVendors, setSelVendors] = useState([]);
     const [dateFrom, setDateFrom] = useState(""); const [dateTo, setDateTo] = useState(""); const [period, setPeriod] = useState("");
@@ -1804,6 +1815,86 @@ export default function App() {
       return{...v,vInv,invoiced,paid,cnAmt,balance:invoiced-paid-cnAmt,count:vInv.length};
     }).filter(v=>v.count>0||selVendors.includes(v.id));
 
+    // Build ledger rows for a vendor (used by screen, CSV, and PDF)
+    const buildLedgerRows = (vid) => {
+      let vInv = apData.filter(i=>i.vid===vid);
+      if(dateFrom) vInv = vInv.filter(i=>i.date>=dateFrom);
+      if(dateTo) vInv = vInv.filter(i=>i.date<=dateTo);
+      const vCN = creditNotes.filter(cn=>cn.vid===vid);
+      const vPay = payments.filter(p=>p.vid===vid);
+      const closingBal = vInv.reduce((s,i)=>s+i.totalGST,0) - vPay.reduce((s,p)=>s+p.amount,0) - vCN.reduce((s,cn)=>s+cn.totalGST,0);
+      return {vInv, vCN, vPay, closingBal};
+    };
+
+    // CSV download
+    const downloadCSV = (v) => {
+      const {vInv, vCN, vPay, closingBal} = buildLedgerRows(v.id);
+      const rows = [];
+      vInv.forEach(inv => {
+        const grnMap = getGrnDetails(inv);
+        const vendorInvNum = grns.find(g=>g.id===inv.grnId)?.vendorInvNum||"";
+        inv.lines?.forEach(l => {
+          const gl = grnMap[l.iid];
+          const disc = gl && gl.qty !== gl.qtyRec ? `Ordered ${gl.qty}, Got ${gl.qtyRec} — ${gl.discReason||"Unknown"}` : "";
+          rows.push([fmt(inv.date), inv.num, vendorInvNum, l.name, l.qty, l.unit, l.price, `${l.gst}%`, l.lineBase, disc, "", inv.totalGST]);
+        });
+        if(inv.extra) rows.push([fmt(inv.date), inv.num, vendorInvNum, inv.extra.label, "", "", "", "", inv.extra.amt, "", "", ""]);
+      });
+      vCN.forEach(cn => { rows.push([fmt(cn.date), cn.num, "", `Credit Note: ${cn.reason}`, "", "", "", "", "", "", cn.totalGST, ""]); });
+      vPay.forEach(p => { rows.push([fmt(p.date), "", `Ref: ${p.ref}`, `Payment (${p.method})`, "", "", "", "", "", "", p.amount, ""]); });
+      rows.push(["", "", "", "CLOSING BALANCE", "", "", "", "", "", "", "", closingBal]);
+      dlCSV(`ledger-${v.name.replace(/\s/g,"-")}.csv`, ["Date","Invoice #","Vendor Inv #","Item","Qty","Unit","Rate","GST%","Amount","Discrepancy","Debit","Credit"], rows);
+    };
+
+    // PDF download
+    const downloadPDF = (v) => {
+      const {vInv, vCN, vPay, closingBal} = buildLedgerRows(v.id);
+      const dateRange = dateFrom||dateTo ? `${dateFrom?fmt(dateFrom):"Start"} to ${dateTo?fmt(dateTo):"Today"}` : "All time";
+      let tableRows = "";
+      vInv.forEach(inv => {
+        const grnMap = getGrnDetails(inv);
+        const vendorInvNum = grns.find(g=>g.id===inv.grnId)?.vendorInvNum||"";
+        inv.lines?.forEach((l,j) => {
+          const gl = grnMap[l.iid];
+          const disc = gl && gl.qty !== gl.qtyRec ? `Ordered ${gl.qty}, Got ${gl.qtyRec} — ${gl.discReason||"Unknown"}` : "";
+          tableRows += `<tr${j===0?` style="border-top:2px solid #999"`:""}>
+            ${j===0?`<td rowspan="${inv.lines.length+(inv.extra?1:0)}" style="vertical-align:top">${fmt(inv.date)}</td><td rowspan="${inv.lines.length+(inv.extra?1:0)}" style="vertical-align:top">${inv.num}</td><td rowspan="${inv.lines.length+(inv.extra?1:0)}" style="vertical-align:top">${vendorInvNum||"—"}</td>`:""}
+            <td>${l.name}</td><td class="right">${l.qty} ${l.unit}</td><td class="right">${R(l.price)}/${l.unit}</td><td class="center">${l.gst}%</td><td class="right">${R(l.lineBase)}</td><td style="color:#b91c1c;font-size:11px">${disc}</td>
+            ${j===0?`<td rowspan="${inv.lines.length+(inv.extra?1:0)}" class="right" style="vertical-align:top;font-weight:bold">${R(inv.totalGST)}</td>`:""}
+          </tr>`;
+        });
+        if(inv.extra) {
+          tableRows += `<tr><td>${inv.extra.label}</td><td></td><td></td><td></td><td class="right">${R(inv.extra.amt)}</td><td></td></tr>`;
+        }
+      });
+      vCN.forEach(cn => {
+        tableRows += `<tr style="background:#fef2f2;border-top:2px solid #999"><td>${fmt(cn.date)}</td><td>${cn.num}</td><td></td><td colspan="4" style="color:#b91c1c">Credit Note: ${cn.reason}</td><td></td><td></td><td class="right" style="color:#b91c1c;font-weight:bold">${R(cn.totalGST)}</td></tr>`;
+      });
+      vPay.sort((a,b)=>a.date.localeCompare(b.date)).forEach(p => {
+        tableRows += `<tr style="background:#f0fdf4;border-top:2px solid #999"><td>${fmt(p.date)}</td><td>—</td><td>Ref: ${p.ref||"—"}</td><td colspan="4">Payment (${p.method?.toUpperCase()})</td><td></td><td></td><td class="right" style="font-weight:bold">${R(p.amount)}</td></tr>`;
+      });
+
+      printHTML(`Ledger - ${v.name}`, `
+        <div class="header">
+          <h1>${COMPANY.name}</h1>
+          <h2>${COMPANY.addr}<br/>${COMPANY.city}</h2>
+          <div style="margin-top:12px;border-top:2px solid #333;padding-top:8px">
+            <h2 style="font-size:16px;color:#000;font-weight:bold">${v.name}</h2>
+            <p style="font-size:12px;color:#666">Bill-wise Details &nbsp;|&nbsp; ${dateRange}</p>
+            ${v.gstin?`<p style="font-size:11px;color:#888">GSTIN: ${v.gstin}</p>`:""}
+          </div>
+        </div>
+        <table style="font-size:11px">
+          <thead><tr><th>Date</th><th>Invoice #</th><th>Vendor Inv #</th><th>Item</th><th class="right">Qty</th><th class="right">Rate</th><th class="center">GST%</th><th class="right">Amount</th><th>Discrepancy</th><th class="right">Credit</th></tr></thead>
+          <tbody>${tableRows}</tbody>
+          <tfoot>
+            <tr style="border-top:3px solid #333"><td colspan="9" style="text-align:right;font-weight:bold">Closing Balance (${closingBal>0?"Cr":"Dr"})</td><td class="right" style="font-weight:bold;font-size:14px">${R(Math.abs(closingBal))}</td></tr>
+          </tfoot>
+        </table>
+        <p style="margin-top:20px;font-size:10px;color:#aaa">Generated by Novy Procurement System</p>
+      `);
+    };
+
     return (
       <div className="space-y-4">
         <div className="flex flex-wrap gap-3 items-start">
@@ -1820,46 +1911,79 @@ export default function App() {
           <div className="bg-white rounded-xl border overflow-x-auto">
             <table className="w-full text-xs min-w-[600px]">
               <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">Vendor</th><th className="text-right px-3 py-2">Invoiced</th><th className="text-right px-3 py-2">Paid</th><th className="text-right px-3 py-2">Credit Notes</th><th className="text-right px-3 py-2">Balance</th><th className="px-3 py-2"></th></tr></thead>
-              <tbody>{ledger.map(v=>(<tr key={v.id} className="border-t hover:bg-gray-50 cursor-pointer" onDoubleClick={()=>setExpanded(v.id)}><td className="px-3 py-2 font-medium">{v.name}</td><td className="px-3 py-2 text-right">{R(v.invoiced)}</td><td className="px-3 py-2 text-right">{R(v.paid)}</td><td className="px-3 py-2 text-right text-red-500">{v.cnAmt>0?R(v.cnAmt):"—"}</td><td className="px-3 py-2 text-right font-bold">{R(v.balance)}</td><td className="px-3 py-2 text-right text-gray-400 text-xs">double-click</td></tr>))}</tbody>
+              <tbody>{ledger.map(v=>(<tr key={v.id} className="border-t hover:bg-gray-50 cursor-pointer" onClick={()=>setExpanded(v.id)}><td className="px-3 py-2 font-medium">{v.name}</td><td className="px-3 py-2 text-right">{R(v.invoiced)}</td><td className="px-3 py-2 text-right">{R(v.paid)}</td><td className="px-3 py-2 text-right text-red-500">{v.cnAmt>0?R(v.cnAmt):"—"}</td><td className="px-3 py-2 text-right font-bold">{R(v.balance)}</td><td className="px-3 py-2 text-right"><Btn v="ghost" s onClick={(e)=>{e.stopPropagation();setExpanded(v.id);}}>View</Btn></td></tr>))}</tbody>
             </table>
           </div>
         )}
         {expanded!==null&&(()=>{
           const v = vendors.find(x=>x.id===expanded);
-          const vInv = apData.filter(i=>i.vid===expanded);
-          const vCN = creditNotes.filter(cn=>cn.vid===expanded);
-          const vPay = payments.filter(p=>p.vid===expanded);
-          const closingBal = vInv.reduce((s,i)=>s+i.totalGST,0) - vPay.reduce((s,p)=>s+p.amount,0) - vCN.reduce((s,cn)=>s+cn.totalGST,0);
+          const {vInv, vCN, vPay, closingBal} = buildLedgerRows(expanded);
+          const dateRange = dateFrom||dateTo ? `${dateFrom?fmt(dateFrom):"Start"} to ${dateTo?fmt(dateTo):"Today"}` : "All time";
           return (
             <div className="bg-white rounded-xl border p-4 overflow-x-auto">
-              <div className="mb-4 pb-4 border-b">
-                <h3 className="font-bold text-center text-sm mb-1">MAVEN CREATORS AND HOSPITALITY LLP</h3>
-                <p className="text-center text-xs text-gray-600 mb-2">NOVY HQ</p>
-                <p className="text-center text-xs font-semibold">{v?.name} — {v?.contact}</p>
-                <p className="text-center text-xs text-gray-500">{v?.gstin}</p>
+              <div className="mb-4 pb-4 border-b text-center">
+                <h3 className="font-bold text-sm">{COMPANY.name}</h3>
+                <p className="text-[10px] text-gray-500">{COMPANY.addr}, {COMPANY.city}</p>
+                <p className="text-sm font-bold mt-2">{v?.name}</p>
+                <p className="text-xs text-gray-500">Bill-wise Details | {dateRange}</p>
+                {v?.gstin&&<p className="text-[10px] text-gray-400">GSTIN: {v.gstin}</p>}
               </div>
-              <table className="w-full text-xs mb-4">
-                <thead><tr className="border-b-2 border-gray-800"><th className="text-left px-3 py-2">Date</th><th className="text-left px-3 py-2">Particulars</th><th className="text-left px-3 py-2">Vch Type</th><th className="text-center px-3 py-2">Vch No</th><th className="text-left px-3 py-2">Vendor Inv #</th><th className="text-right px-3 py-2">Debit</th><th className="text-right px-3 py-2">Credit</th></tr></thead>
-                <tbody>
-                  {vInv.map(inv=>(<tr key={inv.id} className="border-b border-gray-200 align-top"><td className="py-2">{fmt(inv.date)}</td><td className="py-2"><p className="font-bold">Dr (as per details)</p><p className="ml-4 text-gray-600">Purchase - {v?.name}</p>{inv.lines?.map((l,j)=>(<p key={j} className="ml-8 text-gray-500">{l.name} {l.qty} {l.unit} {l.price?`${R(l.price)}/${l.unit}`:""} {l.lineBase?R(l.lineBase):""}</p>))}{inv.extra&&<p className="ml-4 text-gray-500">{inv.extra.label}: {R(inv.extra.amt)}</p>}{(inv.cgst>0||inv.sgst>0)&&<p className="ml-4 text-gray-500">CGST: {R(inv.cgst)} | SGST: {R(inv.sgst)}</p>}{inv.igst>0&&<p className="ml-4 text-gray-500">IGST: {R(inv.igst)}</p>}</td><td className="py-2">Purchase</td><td className="py-2">{inv.num}</td><td className="py-2 text-gray-500">{grns.find(g=>g.id===inv.grnId)?.vendorInvNum||"—"}</td><td className="py-2"></td><td className="py-2 text-right font-bold">{R(inv.totalGST)}</td></tr>))}
-                  {vCN.map(cn=>(<tr key={cn.id} className="border-b border-gray-200 bg-red-50"><td className="py-2">{fmt(cn.date)}</td><td className="py-2"><p className="font-bold text-red-600">Credit Note</p><p className="ml-4 text-gray-500">{cn.reason}</p></td><td className="py-2">CN</td><td className="py-2">{cn.num}</td><td className="py-2"></td><td className="py-2 text-right font-bold text-red-600">{R(cn.totalGST)}</td><td className="py-2"></td></tr>))}
-                  {vPay.sort((a,b)=>a.date.localeCompare(b.date)).map(p=>(<tr key={p.id} className="border-b border-gray-200"><td className="py-2">{fmt(p.date)}</td><td className="py-2"><p className="font-bold">Payment ({p.method?.toUpperCase()})</p><p className="ml-4 text-gray-500">Ref: {p.ref||"—"}</p></td><td className="py-2">Payment</td><td className="py-2">—</td><td className="py-2"></td><td className="py-2 text-right font-bold">{R(p.amount)}</td><td className="py-2"></td></tr>))}
-                </tbody>
-                <tfoot>
-                  <tr className="border-t-2 border-gray-800"><td colSpan={5}></td><td className="py-2 text-right">{R(vPay.reduce((s,p)=>s+p.amount,0)+vCN.reduce((s,cn)=>s+cn.totalGST,0))}</td><td className="py-2 text-right">{R(vInv.reduce((s,i)=>s+i.totalGST,0))}</td></tr>
-                  <tr><td colSpan={4} className="py-1">{closingBal>0?"Cr":"Dr"}</td><td className="font-bold text-right" colSpan={1}>Closing Balance</td><td colSpan={2} className="text-right"><strong>{R(Math.abs(closingBal))}</strong></td></tr>
-                </tfoot>
-              </table>
+              {/* Invoice-level rows with item detail */}
+              {vInv.map(inv => {
+                const grnMap = getGrnDetails(inv);
+                const vendorInvNum = grns.find(g=>g.id===inv.grnId)?.vendorInvNum||"";
+                return (
+                  <div key={inv.id} className="mb-3 border rounded-lg overflow-hidden">
+                    <div className="bg-gray-50 px-3 py-2 flex flex-wrap items-center gap-3 text-xs">
+                      <span className="font-bold">{fmt(inv.date)}</span>
+                      <span className="text-gray-500">{inv.num}</span>
+                      {vendorInvNum&&<span className="text-gray-400">Vendor Inv: {vendorInvNum}</span>}
+                      <span className="flex-1"/>
+                      <span className="font-bold text-sm">{R(inv.totalGST)}</span>
+                    </div>
+                    <table className="w-full text-[11px]">
+                      <thead><tr className="bg-gray-50 text-gray-500"><th className="text-left px-3 py-1">Item</th><th className="text-right px-3 py-1">Qty</th><th className="text-right px-3 py-1">Rate</th><th className="text-center px-3 py-1">GST</th><th className="text-right px-3 py-1">Amount</th><th className="text-left px-3 py-1">Discrepancy</th></tr></thead>
+                      <tbody>
+                        {inv.lines?.map((l,j) => {
+                          const gl = grnMap[l.iid];
+                          const hasDisc = gl && gl.qty !== gl.qtyRec;
+                          return (
+                            <tr key={j} className={`border-t ${hasDisc?"bg-red-50":""}`}>
+                              <td className="px-3 py-1.5 font-medium">{l.name}</td>
+                              <td className="px-3 py-1.5 text-right">{l.qty} {l.unit}</td>
+                              <td className="px-3 py-1.5 text-right">{R(l.price)}/{l.unit}</td>
+                              <td className="px-3 py-1.5 text-center">{l.gst}%</td>
+                              <td className="px-3 py-1.5 text-right font-medium">{R(l.lineBase)}</td>
+                              <td className="px-3 py-1.5 text-red-600 text-[10px]">{hasDisc?`Ordered ${gl.qty}, Got ${gl.qtyRec} — ${gl.discReason||"Unknown"}`:""}</td>
+                            </tr>
+                          );
+                        })}
+                        {inv.extra&&<tr className="border-t"><td className="px-3 py-1.5 text-gray-500" colSpan={4}>{inv.extra.label}</td><td className="px-3 py-1.5 text-right">{R(inv.extra.amt)}</td><td></td></tr>}
+                      </tbody>
+                      <tfoot>
+                        <tr className="border-t bg-gray-50 text-[10px] text-gray-500">
+                          <td colSpan={4} className="px-3 py-1 text-right">{inv.intra?`CGST: ${R(inv.cgst)} + SGST: ${R(inv.sgst)}`:`IGST: ${R(inv.igst)}`}</td>
+                          <td className="px-3 py-1 text-right font-bold text-gray-800">{R(inv.totalGST)}</td>
+                          <td></td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                );
+              })}
+              {/* Credit Notes */}
+              {vCN.map(cn=>(<div key={cn.id} className="mb-2 border border-red-200 rounded-lg bg-red-50 px-3 py-2 flex flex-wrap items-center gap-3 text-xs"><span className="font-bold">{fmt(cn.date)}</span><span className="text-red-600 font-bold">Credit Note</span><span className="text-gray-500">{cn.num}</span><span className="text-gray-500">{cn.reason}</span><span className="flex-1"/><span className="font-bold text-red-600">-{R(cn.totalGST)}</span></div>))}
+              {/* Payments */}
+              {vPay.sort((a,b)=>a.date.localeCompare(b.date)).map(p=>(<div key={p.id} className="mb-2 border border-green-200 rounded-lg bg-green-50 px-3 py-2 flex flex-wrap items-center gap-3 text-xs"><span className="font-bold">{fmt(p.date)}</span><span className="text-green-700 font-bold">Payment</span><span className="text-gray-500">{p.method?.toUpperCase()}</span>{p.ref&&<span className="text-gray-400">Ref: {p.ref}</span>}<span className="flex-1"/><span className="font-bold text-green-700">{R(p.amount)}</span></div>))}
+              {/* Closing balance */}
+              <div className="mt-4 pt-3 border-t-2 border-gray-800 flex justify-between items-center">
+                <span className="text-xs text-gray-500">{closingBal>0?"Cr":"Dr"}</span>
+                <div className="text-right"><p className="text-xs text-gray-500">Closing Balance</p><p className="text-lg font-bold">{R(Math.abs(closingBal))}</p></div>
+              </div>
               <div className="flex justify-end mt-4 gap-2">
                 <Btn v="outline" s onClick={()=>setExpanded(null)}>Close</Btn>
-                <Btn v="outline" s onClick={()=>{
-                  const rows=[];
-                  vInv.forEach(inv=>{const vinv=grns.find(g=>g.id===inv.grnId)?.vendorInvNum||"";rows.push([fmt(inv.date),"Purchase",inv.num,vinv,R(inv.totalGST)]);inv.lines?.forEach(l=>{rows.push(["",`  ${l.name} ${l.qty} ${l.unit}`,l.price?`${R(l.price)}/${l.unit}`:"",R(l.lineBase||0),""])});});
-                  vCN.forEach(cn=>{rows.push([fmt(cn.date),`Credit Note: ${cn.reason}`,cn.num,"",R(cn.totalGST)]);});
-                  vPay.forEach(p=>{rows.push([fmt(p.date),`Payment (${p.method}) Ref:${p.ref}`,"-","",R(p.amount)]);});
-                  rows.push(["","Closing Balance","","",R(closingBal)]);
-                  dlCSV(`ledger-${v?.name.replace(/\s/g,"-")}.csv`,["Date","Particulars","Ref","Vendor Inv #","Debit","Credit"],rows);
-                }}>↓ Download Ledger</Btn>
+                <Btn v="outline" s onClick={()=>downloadCSV(v)}>↓ CSV</Btn>
+                <Btn v="primary" s onClick={()=>downloadPDF(v)}>↓ PDF</Btn>
               </div>
             </div>
           );
