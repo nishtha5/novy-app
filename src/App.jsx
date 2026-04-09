@@ -824,43 +824,54 @@ export default function App() {
     toastTimer.current = setTimeout(()=>setToast(null), ok?2000:4000);
   },[]);
 
-  // ── Load data from Supabase on mount (falls back to SEED if offline) ──
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const [s, v, i, o, g, inv, cn, pay, ph] = await Promise.all([
-          db.fetchStaff(),
-          db.fetchVendors(),
-          db.fetchItems(),
-          db.fetchPurchaseOrders(),
-          db.fetchGRNs(),
-          db.fetchInvoices(),
-          db.fetchCreditNotes(),
-          db.fetchPayments(),
-          db.fetchPriceHistory(),
-        ]);
-        if (cancelled) return;
-        if (s.length > 0) setStaff(s);
-        if (v.length > 0) setVendors(v);
-        if (i.length > 0) setItems(i);
-        setOrders(o);
-        setGrns(g);
-        setInvoices(inv);
-        setCreditNotes(cn);
-        setPayments(pay);
-        setPriceHist(ph);
-        setDbReady(true);
-        // Run diagnostics in background
-        db.diagnose().then(r => console.log("[novy] DB diagnostics:", r)).catch(() => {});
-      } catch (err) {
-        console.warn("Supabase load failed, using SEED data:", err);
-        if (!cancelled) { setDbError(err.message); setDbReady(false); }
-      }
-    };
-    load();
-    return () => { cancelled = true; };
+  // ── Load data from Supabase — auto-refreshes every 30s + on tab focus ──
+  const refreshing = useRef(false);
+  const refresh = useCallback(async (silent = false) => {
+    if (refreshing.current) return; // prevent overlapping fetches
+    refreshing.current = true;
+    try {
+      const [s, v, i, o, g, inv, cn, pay, ph] = await Promise.all([
+        db.fetchStaff(),
+        db.fetchVendors(),
+        db.fetchItems(),
+        db.fetchPurchaseOrders(),
+        db.fetchGRNs(),
+        db.fetchInvoices(),
+        db.fetchCreditNotes(),
+        db.fetchPayments(),
+        db.fetchPriceHistory(),
+      ]);
+      if (s.length > 0) setStaff(s);
+      if (v.length > 0) setVendors(v);
+      if (i.length > 0) setItems(i);
+      setOrders(o);
+      setGrns(g);
+      setInvoices(inv);
+      setCreditNotes(cn);
+      setPayments(pay);
+      setPriceHist(ph);
+      setDbReady(true);
+      if (!silent) console.log("[novy] Data refreshed at", new Date().toLocaleTimeString());
+    } catch (err) {
+      console.warn("Supabase load failed:", err);
+      if (!silent) { setDbError(err.message); setDbReady(false); }
+    } finally {
+      refreshing.current = false;
+    }
   }, []);
+
+  useEffect(() => {
+    // Initial load
+    refresh(false).then(() => {
+      db.diagnose().then(r => console.log("[novy] DB diagnostics:", r)).catch(() => {});
+    });
+    // Auto-refresh every 30 seconds
+    const interval = setInterval(() => refresh(true), 30000);
+    // Refresh when tab becomes visible (user switches back to app)
+    const onVisible = () => { if (document.visibilityState === "visible") refresh(true); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); };
+  }, [refresh]);
 
   const vM = useMemo(() => Object.fromEntries(vendors.map(v=>[v.id,v])), [vendors]);
   const iM = useMemo(() => Object.fromEntries(items.map(i=>[i.id,i])), [items]);
