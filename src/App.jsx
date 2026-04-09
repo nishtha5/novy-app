@@ -824,10 +824,22 @@ export default function App() {
     toastTimer.current = setTimeout(()=>setToast(null), ok?2000:4000);
   },[]);
 
-  // ── Load data from Supabase — auto-refreshes every 30s + on tab focus ──
+  // ── Load data from Supabase — smart sync that doesn't disrupt active users ──
   const refreshing = useRef(false);
+  const lastData = useRef({}); // cache last JSON to skip no-op updates
+
+  // Only update state if data actually changed (prevents re-renders that wipe child state)
+  const smartSet = useCallback((key, setter, newData) => {
+    const newJSON = JSON.stringify(newData);
+    if (lastData.current[key] === newJSON) return; // no change, skip
+    lastData.current[key] = newJSON;
+    setter(newData);
+  }, []);
+
   const refresh = useCallback(async (silent = false) => {
-    if (refreshing.current) return; // prevent overlapping fetches
+    if (refreshing.current) return;
+    // Don't background-refresh while a modal is open (user is mid-action)
+    if (silent && modal) return;
     refreshing.current = true;
     try {
       const [s, v, i, o, g, inv, cn, pay, ph] = await Promise.all([
@@ -841,33 +853,36 @@ export default function App() {
         db.fetchPayments(),
         db.fetchPriceHistory(),
       ]);
-      if (s.length > 0) setStaff(s);
-      if (v.length > 0) setVendors(v);
-      if (i.length > 0) setItems(i);
-      setOrders(o);
-      setGrns(g);
-      setInvoices(inv);
-      setCreditNotes(cn);
-      setPayments(pay);
-      setPriceHist(ph);
+      if (s.length > 0) smartSet("staff", setStaff, s);
+      if (v.length > 0) smartSet("vendors", setVendors, v);
+      if (i.length > 0) smartSet("items", setItems, i);
+      smartSet("orders", setOrders, o);
+      smartSet("grns", setGrns, g);
+      smartSet("invoices", setInvoices, inv);
+      smartSet("creditNotes", setCreditNotes, cn);
+      smartSet("payments", setPayments, pay);
+      smartSet("priceHist", setPriceHist, ph);
       setDbReady(true);
-      if (!silent) console.log("[novy] Data refreshed at", new Date().toLocaleTimeString());
+      if (!silent) console.log("[novy] Data loaded at", new Date().toLocaleTimeString());
     } catch (err) {
       console.warn("Supabase load failed:", err);
       if (!silent) { setDbError(err.message); setDbReady(false); }
     } finally {
       refreshing.current = false;
     }
-  }, []);
+  }, [modal, smartSet]);
 
   useEffect(() => {
     // Initial load
     refresh(false).then(() => {
       db.diagnose().then(r => console.log("[novy] DB diagnostics:", r)).catch(() => {});
     });
-    // Auto-refresh every 30 seconds
-    const interval = setInterval(() => refresh(true), 30000);
-    // Refresh when tab becomes visible (user switches back to app)
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    // Background sync every 60 seconds (gentle, won't disrupt users)
+    const interval = setInterval(() => refresh(true), 60000);
+    // Refresh when user switches back to the tab (most reliable sync point)
     const onVisible = () => { if (document.visibilityState === "visible") refresh(true); };
     document.addEventListener("visibilitychange", onVisible);
     return () => { clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); };
@@ -928,7 +943,8 @@ export default function App() {
           <div className="mt-4 pt-3 border-t text-center">
             <span className={`inline-flex items-center gap-1.5 text-xs ${dbReady?"text-green-600":dbError?"text-red-500":"text-gray-400"}`}>
               <span className={`w-2 h-2 rounded-full ${dbReady?"bg-green-500":dbError?"bg-red-400":"bg-gray-300 animate-pulse"}`}/>
-              {dbReady?"Connected to Supabase":dbError?"Offline — using local data":"Connecting..."}
+              {dbReady?"Synced":dbError?"Offline":"Connecting..."}
+              {dbReady&&<button onClick={()=>{refresh(false);notify("Syncing...");}} className="ml-1 text-green-600 hover:text-green-800 underline text-xs">↻</button>}
             </span>
           </div>
         </div>
