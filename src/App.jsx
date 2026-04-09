@@ -810,6 +810,13 @@ export default function App() {
   const [setupUnlocked, setSetupUnlocked] = useState(false);
   const [dbReady, setDbReady] = useState(false);
   const [dbError, setDbError] = useState(null);
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
+  const notify = useCallback((msg, ok=true) => {
+    if(toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({msg, ok});
+    toastTimer.current = setTimeout(()=>setToast(null), ok?2000:4000);
+  },[]);
 
   // ── Load data from Supabase on mount (falls back to SEED if offline) ──
   useEffect(() => {
@@ -981,7 +988,7 @@ export default function App() {
           const newPO = {id:uid(), num, date:td(), by:user.name, status:"draft", vid, lines:vLines, total:0};
           setOrders(p=>[...p, newPO]);
           // Persist to Supabase
-          try { await db.createPurchaseOrder(newPO, user.id); } catch(e) { console.warn("DB write PO failed:", e); }
+          try { await db.createPurchaseOrder(newPO, user.id); notify("Order saved"); } catch(e) { notify("Order not synced — saved locally", false); }
         }
       }
       setLines([]); setSearch(""); setActiveCat("");
@@ -1104,7 +1111,7 @@ export default function App() {
                 </div>
                 <div className="flex gap-2">
                   <Btn v="ghost" s onClick={()=>printPO(po)}>PDF</Btn>
-                  {po.status==="partially_received" && <Btn v="danger" s onClick={async()=>{if(!confirm("Close this PO? Remaining items won't be received."))return;setOrders(p=>p.map(x=>x.id===po.id?{...x,status:"received"}:x));try{await db.updatePOStatus(po.id,"received");}catch(e){console.warn("DB close PO failed:",e);}}}>Close PO</Btn>}
+                  {po.status==="partially_received" && <Btn v="danger" s onClick={async()=>{if(!confirm("Close this PO? Remaining items won't be received."))return;setOrders(p=>p.map(x=>x.id===po.id?{...x,status:"received"}:x));try{await db.updatePOStatus(po.id,"received");notify("PO closed");}catch(e){notify("PO close not synced",false);}}}>Close PO</Btn>}
                   <Btn v="outline" s onClick={()=>setModal({type:"receive",data:po})} disabled={remaining.length===0}>{remaining.length>0?"Receive":"Fully Received"}</Btn>
                 </div>
               </div>
@@ -1181,7 +1188,7 @@ export default function App() {
             const newStatus = allDone?"received":"partially_received";
             setOrders(p=>p.map(o=>o.id===po.id?{...o,status:newStatus}:o));
             setModal(null);
-            try { await db.createGRN(newGrn); await db.updatePOStatus(po.id, newStatus); } catch(e) { console.warn("DB write GRN failed:", e); }
+            try { await db.createGRN(newGrn); await db.updatePOStatus(po.id, newStatus); notify("GRN saved"); } catch(e) { notify("GRN not synced — saved locally", false); }
           }}>Confirm GRN</Btn>
         </div>
       </Modal>
@@ -1243,7 +1250,7 @@ export default function App() {
                 if(editId){setStaff(p=>p.map(s=>s.id===editId?{...s,...staffObj}:s));
                 }else{setStaff(p=>[...p,staffObj]);}
                 clearEdit();
-                try { await db.upsertStaff(staffObj); } catch(e) { console.warn("DB staff save failed:", e); }
+                try { await db.upsertStaff(staffObj); notify("Staff saved"); } catch(e) { notify("Staff not synced", false); }
               }}>{editId?"Save":"+ Add"}</Btn>
             </div>
           </div>
@@ -1255,7 +1262,7 @@ export default function App() {
                 <td className="px-3 py-2 text-center"><Badge t={s.role==="manager"?"Manager":"Staff"} c={s.role==="manager"?"purple":"blue"}/></td>
                 <td className="px-3 py-2 flex gap-2 justify-end">
                   <button onClick={()=>{setEditId(s.id);setNE({name:s.name,role:s.role});}} className="text-orange-500 text-xs">Edit</button>
-                  <button onClick={async()=>{setStaff(p=>p.filter(x=>x.id!==s.id)); try{await db.deleteStaff(s.id);}catch(e){console.warn("DB staff delete failed:",e);}}} className="text-red-400 text-xs">Del</button>
+                  <button onClick={async()=>{setStaff(p=>p.filter(x=>x.id!==s.id)); try{await db.deleteStaff(s.id);notify("Staff deleted");}catch(e){notify("Delete not synced",false);}}} className="text-red-400 text-xs">Del</button>
                 </td>
               </tr>))}</tbody>
             </table>
@@ -1278,13 +1285,13 @@ export default function App() {
             </div>
             <div className="flex justify-end gap-2 mt-2">
               {editId && <Btn v="ghost" s onClick={clearEdit}>Cancel</Btn>}
-              <Btn disabled={!nI.name} s onClick={async()=>{const itemObj={...nI,id:editId||uid()};if(editId){setItems(p=>p.map(i=>i.id===editId?itemObj:i));setEditId(null);}else{setItems(p=>[...p,itemObj]);}setNI({name:"",unit:"kg",hsn:"",gst:0,vid:"",category:""});try{await db.upsertItem(itemObj);}catch(e){console.warn("DB item save failed:",e);}}}>{editId?"Save":"+ Add"}</Btn>
+              <Btn disabled={!nI.name} s onClick={async()=>{const itemObj={...nI,id:editId||uid()};if(editId){setItems(p=>p.map(i=>i.id===editId?itemObj:i));setEditId(null);}else{setItems(p=>[...p,itemObj]);}setNI({name:"",unit:"kg",hsn:"",gst:0,vid:"",category:""});try{await db.upsertItem(itemObj);notify("Item saved");}catch(e){notify("Item not synced",false);}}}>{editId?"Save":"+ Add"}</Btn>
             </div>
           </div>
           <div className="bg-white rounded-xl border overflow-x-auto">
             <table className="w-full text-xs min-w-[600px]">
               <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">Item</th><th className="px-3 py-2">Category</th><th className="px-3 py-2">Unit</th><th className="px-3 py-2">HSN</th><th className="px-3 py-2">GST</th><th className="px-3 py-2">Vendor</th><th className="w-20"></th></tr></thead>
-              <tbody>{filteredItems.map(it=>(<tr key={it.id} className="border-t hover:bg-gray-50"><td className="px-3 py-2 font-medium">{it.name}</td><td className="px-3 py-2 text-center text-gray-500 text-xs">{it.category||"—"}</td><td className="px-3 py-2 text-center text-gray-500">{it.unit}</td><td className="px-3 py-2 text-center text-gray-400">{it.hsn||"—"}</td><td className="px-3 py-2 text-center">{it.gst}%</td><td className="px-3 py-2 text-gray-500">{vM[it.vid]?.name||"—"}</td><td className="px-3 py-2 flex gap-2"><button onClick={()=>{setEditId(it.id);setNI({name:it.name,unit:it.unit,hsn:it.hsn,gst:it.gst,vid:it.vid||"",category:it.category||""});}} className="text-orange-500 text-xs">Edit</button><button onClick={async()=>{setItems(p=>p.filter(x=>x.id!==it.id));try{await db.deleteItem(it.id);}catch(e){console.warn("DB item delete failed:",e);}}} className="text-red-400 text-xs">Del</button></td></tr>))}</tbody>
+              <tbody>{filteredItems.map(it=>(<tr key={it.id} className="border-t hover:bg-gray-50"><td className="px-3 py-2 font-medium">{it.name}</td><td className="px-3 py-2 text-center text-gray-500 text-xs">{it.category||"—"}</td><td className="px-3 py-2 text-center text-gray-500">{it.unit}</td><td className="px-3 py-2 text-center text-gray-400">{it.hsn||"—"}</td><td className="px-3 py-2 text-center">{it.gst}%</td><td className="px-3 py-2 text-gray-500">{vM[it.vid]?.name||"—"}</td><td className="px-3 py-2 flex gap-2"><button onClick={()=>{setEditId(it.id);setNI({name:it.name,unit:it.unit,hsn:it.hsn,gst:it.gst,vid:it.vid||"",category:it.category||""});}} className="text-orange-500 text-xs">Edit</button><button onClick={async()=>{setItems(p=>p.filter(x=>x.id!==it.id));try{await db.deleteItem(it.id);notify("Item deleted");}catch(e){notify("Delete not synced",false);}}} className="text-red-400 text-xs">Del</button></td></tr>))}</tbody>
             </table>
           </div>
         </>)}
@@ -1306,13 +1313,13 @@ export default function App() {
             </div>
             <div className="flex justify-end gap-2 mt-2">
               {editId && <Btn v="ghost" s onClick={clearEdit}>Cancel</Btn>}
-              <Btn disabled={!nV.name} s onClick={async()=>{const vObj={...nV,id:editId||uid()};if(editId){setVendors(p=>p.map(v=>v.id===editId?vObj:v));setEditId(null);}else{setVendors(p=>[...p,vObj]);}setNV({name:"",contact:"",phone:"",gstin:"",state:"Maharashtra",intra:true,terms:30,category:""});try{await db.upsertVendor(vObj);}catch(e){console.warn("DB vendor save failed:",e);}}}>{editId?"Save":"+ Add"}</Btn>
+              <Btn disabled={!nV.name} s onClick={async()=>{const vObj={...nV,id:editId||uid()};if(editId){setVendors(p=>p.map(v=>v.id===editId?vObj:v));setEditId(null);}else{setVendors(p=>[...p,vObj]);}setNV({name:"",contact:"",phone:"",gstin:"",state:"Maharashtra",intra:true,terms:30,category:""});try{await db.upsertVendor(vObj);notify("Vendor saved");}catch(e){notify("Vendor not synced",false);}}}>{editId?"Save":"+ Add"}</Btn>
             </div>
           </div>
           <div className="bg-white rounded-xl border overflow-x-auto">
             <table className="w-full text-xs min-w-[600px]">
               <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">Vendor</th><th className="px-3 py-2">Contact</th><th className="px-3 py-2">GSTIN</th><th className="px-3 py-2">Terms</th><th className="px-3 py-2">Tax</th><th className="w-20"></th></tr></thead>
-              <tbody>{filteredVendors.map(v=>(<tr key={v.id} className="border-t hover:bg-gray-50"><td className="px-3 py-2 font-medium">{v.name}</td><td className="px-3 py-2 text-gray-500">{v.contact} {v.phone}</td><td className="px-3 py-2 font-mono text-gray-400">{v.gstin}</td><td className="px-3 py-2 text-center">Net {v.terms}</td><td className="px-3 py-2 text-center"><Badge t={v.intra?"CGST+SGST":"IGST"} c={v.intra?"blue":"purple"}/></td><td className="px-3 py-2 flex gap-2"><button onClick={()=>{setEditId(v.id);setNV({name:v.name,contact:v.contact,phone:v.phone,gstin:v.gstin,state:v.state,intra:v.intra,terms:v.terms,category:v.category||""});setView("vendors");}} className="text-orange-500 text-xs">Edit</button><button onClick={async()=>{setVendors(p=>p.filter(x=>x.id!==v.id));try{await db.deleteVendor(v.id);}catch(e){console.warn("DB vendor delete failed:",e);}}} className="text-red-400 text-xs">Del</button></td></tr>))}</tbody>
+              <tbody>{filteredVendors.map(v=>(<tr key={v.id} className="border-t hover:bg-gray-50"><td className="px-3 py-2 font-medium">{v.name}</td><td className="px-3 py-2 text-gray-500">{v.contact} {v.phone}</td><td className="px-3 py-2 font-mono text-gray-400">{v.gstin}</td><td className="px-3 py-2 text-center">Net {v.terms}</td><td className="px-3 py-2 text-center"><Badge t={v.intra?"CGST+SGST":"IGST"} c={v.intra?"blue":"purple"}/></td><td className="px-3 py-2 flex gap-2"><button onClick={()=>{setEditId(v.id);setNV({name:v.name,contact:v.contact,phone:v.phone,gstin:v.gstin,state:v.state,intra:v.intra,terms:v.terms,category:v.category||""});setView("vendors");}} className="text-orange-500 text-xs">Edit</button><button onClick={async()=>{setVendors(p=>p.filter(x=>x.id!==v.id));try{await db.deleteVendor(v.id);notify("Vendor deleted");}catch(e){notify("Delete not synced",false);}}} className="text-red-400 text-xs">Del</button></td></tr>))}</tbody>
             </table>
           </div>
         </>)}
@@ -1396,7 +1403,7 @@ export default function App() {
                   <div className="flex gap-2 flex-wrap">
                     {o.status==="draft" && <>
                       <Btn v="outline" s onClick={()=>setModal({type:"editPO",data:o})}>Edit</Btn>
-                      <Btn v="primary" s onClick={async()=>{setOrders(p=>p.map(x=>x.id===o.id?{...x,status:"sent_to_vendor"}:x));try{await db.updatePOStatus(o.id,"sent_to_vendor");}catch(e){console.warn("DB PO status failed:",e);}}}>✓ Mark Sent</Btn>
+                      <Btn v="primary" s onClick={async()=>{setOrders(p=>p.map(x=>x.id===o.id?{...x,status:"sent_to_vendor"}:x));try{await db.updatePOStatus(o.id,"sent_to_vendor");notify("PO marked sent");}catch(e){notify("Status not synced",false);}}}>✓ Mark Sent</Btn>
                     </>}
                     <Btn v="ghost" s onClick={()=>printPO(o)}>PDF</Btn>
                   </div>
@@ -1439,7 +1446,7 @@ export default function App() {
         </table>
         </div>
         <div className="flex justify-end gap-2">
-          <Btn v="danger" s onClick={async()=>{setOrders(p=>p.map(o=>o.id===po.id?{...o,status:"cancelled"}:o));setModal(null);try{await db.updatePOStatus(po.id,"cancelled");}catch(e){console.warn("DB cancel PO failed:",e);}}}>Cancel PO</Btn>
+          <Btn v="danger" s onClick={async()=>{setOrders(p=>p.map(o=>o.id===po.id?{...o,status:"cancelled"}:o));setModal(null);try{await db.updatePOStatus(po.id,"cancelled");notify("PO cancelled");}catch(e){notify("Cancel not synced",false);}}}>Cancel PO</Btn>
           <Btn v="outline" onClick={()=>setModal(null)}>Close</Btn>
           <Btn onClick={()=>{setOrders(p=>p.map(o=>o.id===po.id?{...o,lines}:o));setModal(null);}}>Save Changes</Btn>
         </div>
@@ -1479,7 +1486,7 @@ export default function App() {
                   </div>
                   <div className="flex items-center gap-2 mb-2 bg-blue-50 rounded-lg px-3 py-2">
                     <span className="text-xs font-medium text-blue-700">Vendor Invoice #:</span>
-                    <InlineEdit className="border border-blue-200 rounded-lg px-3 py-1.5 text-sm flex-1 max-w-xs focus:outline-none focus:ring-2 focus:ring-blue-300" placeholder="Enter vendor bill/invoice number" value={g.vendorInvNum||""} onChange={val=>{setGrns(p=>p.map(x=>x.id===g.id?{...x,vendorInvNum:val}:x));db.updateGRNVendorInvoice(g.id,val).catch(e=>console.warn("DB vendor inv# failed:",e));}}/>
+                    <InlineEdit className="border border-blue-200 rounded-lg px-3 py-1.5 text-sm flex-1 max-w-xs focus:outline-none focus:ring-2 focus:ring-blue-300" placeholder="Enter vendor bill/invoice number" value={g.vendorInvNum||""} onChange={val=>{setGrns(p=>p.map(x=>x.id===g.id?{...x,vendorInvNum:val}:x));db.updateGRNVendorInvoice(g.id,val).then(()=>notify("Invoice # saved")).catch(e=>notify("Invoice # not synced",false));}}/>
                     {g.vendorInvNum && <Badge t="Mapped" c="green"/>}
                   </div>
                   <div className="overflow-x-auto">
@@ -1552,7 +1559,7 @@ export default function App() {
             const newCN = {id:uid(), num:cnNum, grnId:grn.id, grnNum:grn.grnNum, invId:inv?.id, vid:grn.vid, vname:v?.name, date:td(), reason:cnReason, base:baseTotal, cgst:gstCalc.cgst, sgst:gstCalc.sgst, igst:gstCalc.igst, totalGST:gstCalc.total, lines:returnLines};
             setCreditNotes(p=>[...p, newCN]);
             setModal(null);
-            try { await db.createCreditNote(newCN); } catch(e) { console.warn("DB credit note failed:", e); }
+            try { await db.createCreditNote(newCN); notify("Credit note saved"); } catch(e) { notify("Credit note not synced", false); }
           }}>Create Credit Note</Btn>
         </div>
       </Modal>
@@ -1612,7 +1619,7 @@ export default function App() {
         setPriceHist(p=>[...p,{id:uid(),itemId:l.iid,vendorId:grn.vid,itemName:l.name,vendorName:vendor?.name,price:l.price,prevPrice:prevEntry?.price||0,date:td(),grnNum:grn.grnNum,invNum}]);
         // Update item's default vendor and GST
         setItems(p=>p.map(it=>it.id===l.iid?{...it,vid:grn.vid,gst:l.gst}:it));
-        try{db.upsertItem({id:l.iid,name:l.name,unit:l.unit,vid:grn.vid,gst:l.gst});}catch(e){console.warn("DB item default update failed:",e);}
+        try{db.upsertItem({id:l.iid,name:l.name,unit:l.unit,vid:grn.vid,gst:l.gst});}catch(e){}
       });
       const invL = pL.map(l=>{const qty=l.qtyRec||l.qty;const lb=l.totalOverride!==null?l.totalOverride:qty*l.price;const g=calcGST(lb,l.gst,vendor?.intra);return{...l,qty,lineBase:lb,lineCgst:g.cgst,lineSgst:g.sgst,lineIgst:g.igst,lineTotal:g.total};});
       const newInv = {id:uid(),num:invNum,grnId:grn.id,grnNum:grn.grnNum,poNum:po?.num,vid:grn.vid,vname:vendor?.name,vgstin:vendor?.gstin,intra:vendor?.intra,date:td(),due:addD(td(),vendor?.terms||30),base:baseTotal,cgst:gstB.cgst,sgst:gstB.sgst,igst:gstB.igst,totalGST:grand,lines:invL,extra:extraAmt>0?{label:extraLabel,amt:extraAmt}:null,vendorInvNum};
@@ -1622,7 +1629,8 @@ export default function App() {
         await db.savePriceHistory(priceEntries);
         await db.createInvoice(newInv);
         await db.updatePOStatus(grn.poId, "grn_done");
-      } catch(e) { console.warn("DB pricing approve failed:", e); }
+        notify("Invoice created");
+      } catch(e) { notify("Pricing not synced", false); }
     };
 
     return (
@@ -1732,7 +1740,7 @@ export default function App() {
         </div>
         <div className="flex justify-end gap-2">
           <Btn v="outline" onClick={()=>setModal(null)}>Cancel</Btn>
-          <Btn v="success" disabled={!amt} onClick={async()=>{const newPay={id:uid(),invId:inv.id,vid:inv.vid,amount:+amt,date:dt,method,ref:refNum,by:user?.name||""};setPayments(p=>[...p,newPay]);setModal(null);try{await db.createPayment(newPay);}catch(e){console.warn("DB payment failed:",e);}}}>Record</Btn>
+          <Btn v="success" disabled={!amt} onClick={async()=>{const newPay={id:uid(),invId:inv.id,vid:inv.vid,amount:+amt,date:dt,method,ref:refNum,by:user?.name||""};setPayments(p=>[...p,newPay]);setModal(null);try{await db.createPayment(newPay);notify("Payment recorded");}catch(e){notify("Payment not synced",false);}}}>Record</Btn>
         </div>
       </Modal>
     );
@@ -2011,6 +2019,7 @@ export default function App() {
       {modal?.type==="pay"&&<PayModal inv={modal.data}/>}
       {modal?.type==="editPO"&&<EditPOModal po={modal.data}/>}
       {modal?.type==="creditNote"&&<CreditNoteModal grn={modal.data}/>}
+      {toast&&<div className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-xl shadow-lg text-sm font-medium transition-all ${toast.ok?"bg-green-600 text-white":"bg-red-500 text-white"}`}>{toast.ok?"✓":"✗"} {toast.msg}</div>}
     </div>
   );
 }
