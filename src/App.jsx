@@ -984,21 +984,22 @@ export default function App() {
 
     const submit = async () => {
       if(lines.length===0) return;
-      const byVendor = {};
-      lines.forEach(l => { const vid = l.vid || "unknown"; if(!byVendor[vid]) byVendor[vid]=[]; byVendor[vid].push(l); });
-
-      for (const [vid, vLines] of Object.entries(byVendor)) {
-        const existingDraft = orders.find(o => o.vid === vid && o.date === td() && o.status === "draft");
-        if (existingDraft) {
-          setOrders(p => p.map(o => o.id === existingDraft.id ? {...o, lines: [...o.lines, ...vLines]} : o));
-        } else {
-          const num = genNum("PO", td(), orders);
-          const newPO = {id:uid(), num, date:td(), by:user.name, status:"draft", vid, lines:vLines, total:0};
-          setOrders(p=>[...p, newPO]);
-          // Persist to Supabase
-          try { await db.createPurchaseOrder(newPO, user.id); notify("Order saved"); } catch(e) { console.error("[novy] PO create error:", e.message); notify(e.message?.includes("vendor") ? "Select a vendor for all items" : `Sync error: ${e.message?.slice(0,80)}`, false); }
-        }
+      // Staff submits all items into a single draft PO (no vendor required)
+      // Manager assigns vendors later and splits when marking "Sent"
+      const existingDraft = orders.find(o => o.by === user.name && o.date === td() && o.status === "draft");
+      if (existingDraft) {
+        // Merge into today's existing draft
+        const merged = [...existingDraft.lines];
+        lines.forEach(l => { if(!merged.find(m=>m.iid===l.iid)) merged.push(l); });
+        setOrders(p => p.map(o => o.id === existingDraft.id ? {...o, lines: merged} : o));
+        notify("Items added to today's draft");
+      } else {
+        const num = genNum("PO", td(), orders);
+        const newPO = {id:uid(), num, date:td(), by:user.name, status:"draft", vid:"", lines, total:0};
+        setOrders(p=>[...p, newPO]);
+        notify("Draft order created");
       }
+      // Drafts stay local — synced to Supabase when manager assigns vendor & marks sent
       setLines([]); setSearch(""); setActiveCat("");
     };
 
@@ -1410,21 +1411,41 @@ export default function App() {
                     <span className="font-bold text-sm">{o.num}</span>
                     <Badge t={PO_STATUSES[o.status]} c={sc(o.status)}/>
                   </div>
-                  <span className="text-xs text-gray-500 sm:hidden">{vM[o.vid]?.name}</span>
-                  <span className="text-xs text-gray-500 hidden sm:inline">{vM[o.vid]?.name} • {fmt(o.date)} • by {o.by}</span>
+                  <span className="text-xs text-gray-500 sm:hidden">{vM[o.vid]?.name||"No vendor"} • {fmt(o.date)}</span>
+                  <span className="text-xs text-gray-500 hidden sm:inline">{vM[o.vid]?.name||"No vendor yet"} • {fmt(o.date)} • by {o.by}</span>
                   <div className="flex-1"/>
                   <div className="flex gap-2 flex-wrap">
                     {o.status==="draft" && <>
                       <Btn v="outline" s onClick={()=>setModal({type:"editPO",data:o})}>Edit</Btn>
-                      <Btn v="primary" s onClick={async()=>{setOrders(p=>p.map(x=>x.id===o.id?{...x,status:"sent_to_vendor"}:x));try{await db.updatePOStatus(o.id,"sent_to_vendor");notify("PO marked sent");}catch(e){notify("Status not synced",false);}}}>✓ Mark Sent</Btn>
+                      <Btn v="primary" s onClick={async()=>{
+                        // Check all lines have vendors assigned
+                        const unassigned = o.lines.filter(l=>!l.vid || l.vid==="unknown");
+                        if(unassigned.length>0){notify(`${unassigned.length} item(s) need a vendor assigned first`,false);return;}
+                        // Split by vendor → create separate POs per vendor in Supabase
+                        const byVendor = {};
+                        o.lines.forEach(l=>{if(!byVendor[l.vid])byVendor[l.vid]=[];byVendor[l.vid].push(l);});
+                        const vendorIds = Object.keys(byVendor);
+                        // Remove original draft
+                        setOrders(p=>p.filter(x=>x.id!==o.id));
+                        let syncOk = true;
+                        for(const vid of vendorIds){
+                          const vLines = byVendor[vid];
+                          const num = genNum("PO", o.date||td(), orders);
+                          const newPO = {id:uid(), num, date:o.date||td(), by:o.by, status:"sent_to_vendor", vid, lines:vLines, total:0};
+                          setOrders(p=>[...p, newPO]);
+                          try{const saved = await db.createPurchaseOrder(newPO, user.id); setOrders(p=>p.map(x=>x.id===newPO.id?{...x,id:saved.id,num:saved.num}:x));await db.updatePOStatus(saved.id,"sent_to_vendor");}catch(e){console.error("[novy] PO send error:",e.message);syncOk=false;}
+                        }
+                        notify(syncOk?`${vendorIds.length} PO(s) sent to vendors`:"POs created locally, sync had errors",syncOk);
+                      }}>✓ Mark Sent</Btn>
                     </>}
                     <Btn v="ghost" s onClick={()=>printPO(o)}>PDF</Btn>
                   </div>
                 </div>
+                {o.status==="draft"&&<div className="flex items-center gap-2 mb-2"><span className="text-xs text-gray-500">Assign all to:</span><select className="border rounded px-2 py-1 text-xs" value="" onChange={e=>{const vid=e.target.value;if(!vid)return;const vname=vendors.find(v=>v.id===vid)?.name||"";setOrders(p=>p.map(x=>x.id===o.id?{...x,vid,lines:x.lines.map(ll=>({...ll,vid,vname}))}:x));}}><option value="">Pick vendor...</option>{vendors.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>}
                 <div className="overflow-x-auto">
                 <table className="w-full text-xs min-w-full sm:min-w-[600px]">
-                  <thead className="bg-gray-50"><tr><th className="text-left px-2 sm:px-3 py-1">Item</th><th className="hidden sm:table-cell px-3 py-1">Qty</th><th className="hidden md:table-cell px-3 py-1">Unit</th><th className="hidden lg:table-cell px-3 py-1">Vendor</th><th className="hidden xl:table-cell px-3 py-1">Delivery</th><th className="hidden 2xl:table-cell px-3 py-1">Notes</th></tr></thead>
-                  <tbody>{o.lines.map((l,i)=><tr key={i} className="border-t"><td className="px-2 sm:px-3 py-1 font-medium text-xs sm:text-sm">{l.name}</td><td className="hidden sm:table-cell px-3 py-1 text-center">{l.qty}</td><td className="hidden md:table-cell px-3 py-1 text-center text-gray-500">{l.unit}</td><td className="hidden lg:table-cell px-3 py-1">{l.vid && l.vid !== "unknown" ? vM[l.vid]?.name : <select className="w-full border rounded px-1 py-1 text-xs" value={l.vid||""} onChange={e=>{const vid=e.target.value;const vname=vendors.find(v=>v.id===vid)?.name||"";setOrders(p=>p.map(x=>x.id===o.id?{...x,lines:x.lines.map((ll,j)=>j===i?{...ll,vid,vname}:ll)}:x));}}><option value="">Select...</option>{vendors.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select>}</td><td className="hidden xl:table-cell px-3 py-1 text-gray-500 text-xs">{fmt(l.delDate)}</td><td className="hidden 2xl:table-cell px-3 py-1 text-gray-400 text-xs">{l.notes||"—"}</td></tr>)}</tbody>
+                  <thead className="bg-gray-50"><tr><th className="text-left px-2 sm:px-3 py-1">Item</th><th className="hidden sm:table-cell px-3 py-1">Qty</th><th className="px-2 sm:px-3 py-1">Vendor</th><th className="hidden lg:table-cell px-3 py-1">Delivery</th><th className="hidden xl:table-cell px-3 py-1">Notes</th></tr></thead>
+                  <tbody>{o.lines.map((l,i)=><tr key={i} className={`border-t ${!l.vid||l.vid==="unknown"?"bg-amber-50":""}`}><td className="px-2 sm:px-3 py-1 font-medium text-xs sm:text-sm">{l.name}</td><td className="hidden sm:table-cell px-3 py-1 text-center">{l.qty} {l.unit}</td><td className="px-2 sm:px-3 py-1">{o.status==="draft"?<select className="w-full border rounded px-1 py-1 text-xs" value={l.vid||""} onChange={e=>{const vid=e.target.value;const vname=vendors.find(v=>v.id===vid)?.name||"";setOrders(p=>p.map(x=>x.id===o.id?{...x,lines:x.lines.map((ll,j)=>j===i?{...ll,vid,vname}:ll)}:x));}}><option value="">Select vendor...</option>{vendors.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select>:<span className="text-xs text-gray-500">{vM[l.vid]?.name||"—"}</span>}</td><td className="hidden lg:table-cell px-3 py-1 text-gray-500 text-xs">{fmt(l.delDate)}</td><td className="hidden xl:table-cell px-3 py-1 text-gray-400 text-xs">{l.notes||"—"}</td></tr>)}</tbody>
                 </table>
                 </div>
               </div>
@@ -1632,18 +1653,22 @@ export default function App() {
         setPriceHist(p=>[...p,{id:uid(),iid:l.iid,vid:grn.vid,name:l.name,vname:vendor?.name,price:l.price,prevPrice:prevEntry?.price||0,date:td(),grnNum:grn.grnNum,invNum}]);
         // Update item's default vendor and GST
         setItems(p=>p.map(it=>it.id===l.iid?{...it,vid:grn.vid,gst:l.gst}:it));
-        try{db.upsertItem({id:l.iid,name:l.name,unit:l.unit,vid:grn.vid,gst:l.gst});}catch(e){}
       });
       const invL = pL.map(l=>{const qty=l.qtyRec||l.qty;const lb=l.totalOverride!==null?l.totalOverride:qty*l.price;const g=calcGST(lb,l.gst,vendor?.intra);return{...l,qty,lineBase:lb,lineCgst:g.cgst,lineSgst:g.sgst,lineIgst:g.igst,lineTotal:g.total};});
       const newInv = {id:uid(),num:invNum,grnId:grn.id,grnNum:grn.grnNum,poNum:po?.num,vid:grn.vid,vname:vendor?.name,vgstin:vendor?.gstin,intra:vendor?.intra,date:td(),due:addD(td(),vendor?.terms||30),base:baseTotal,cgst:gstB.cgst,sgst:gstB.sgst,igst:gstB.igst,totalGST:grand,lines:invL,extra:extraAmt>0?{label:extraLabel,amt:extraAmt}:null,vendorInvNum};
       setInvoices(p=>[...p, newInv]);
       setOrders(p=>p.map(o=>o.id===grn.poId?{...o,status:"grn_done",total:grand}:o));
-      try {
-        await db.savePriceHistory(priceEntries);
-        await db.createInvoice(newInv);
-        await db.updatePOStatus(grn.poId, "grn_done");
-        notify("Invoice created");
-      } catch(e) { notify("Pricing not synced", false); }
+      // Sync each step independently — one failure shouldn't block the rest
+      const errors = [];
+      try { await db.savePriceHistory(priceEntries); } catch(e) { errors.push("prices"); console.error("[novy] savePriceHistory:", e.message); }
+      try { await db.createInvoice(newInv); } catch(e) { errors.push("invoice"); console.error("[novy] createInvoice:", e.message); }
+      try { await db.updatePOStatus(grn.poId, "grn_done"); } catch(e) { errors.push("PO status"); console.error("[novy] updatePOStatus:", e.message); }
+      // Update items with vendor/GST defaults
+      for (const l of pL) {
+        try { await db.upsertItem({id:l.iid, name:l.name, unit:l.unit, vid:grn.vid, gst:l.gst}); } catch(e) { console.error("[novy] upsertItem:", e.message); }
+      }
+      if (errors.length === 0) notify("Invoice created");
+      else notify(`Saved locally, sync failed: ${errors.join(", ")}`, false);
     };
 
     return (
