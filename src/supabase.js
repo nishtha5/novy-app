@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════
-// SUPABASE REST CLIENT — Novy Procurement System
+// SUPABASE REST CLIENT — Novy Procurement System (v4 — master debug)
 // ═══════════════════════════════════════════════════════════════════
 // Uses fetch directly against Supabase's PostgREST API — no npm package needed.
 // 1. Go to supabase.com → create project
@@ -11,8 +11,13 @@ const URL = (import.meta.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "");
 const KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
 const REST = `${URL}/rest/v1`;
 
-// Helper: convert non-UUID strings like "unknown" to null
-const toUUID = (v) => (v && v.length > 10 && v !== "unknown" ? v : null);
+// ── UUID validation ─────────────────────────────────────────────
+// Real UUID: 550e8400-e29b-41d4-a716-446655440000  (36 chars)
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUUID = (v) => typeof v === "string" && UUID_RE.test(v);
+
+// Convert to UUID or null. Catches SEED IDs like "s1","v1","i1","mgr","unknown"
+const toUUID = (v) => (isUUID(v) ? v : null);
 
 const hdrs = (extra = {}) => ({
   apikey: KEY,
@@ -55,12 +60,20 @@ async function upsert(table, body) {
   return r.json();
 }
 
+async function del(table, query) {
+  const r = await fetch(`${REST}/${table}?${query}`, {
+    method: "DELETE", headers: hdrs(),
+  });
+  if (!r.ok) throw new Error(`DELETE ${table}: ${r.status} ${await r.text()}`);
+}
+
 async function rpc(fnName) {
   const r = await fetch(`${URL}/rest/v1/rpc/${fnName}`, {
     method: "POST", headers: hdrs(), body: "{}",
   });
   if (!r.ok) return null;
-  return r.json();
+  const data = await r.json();
+  return typeof data === "string" ? data : null;
 }
 
 // ── STAFF ─────────────────────────────────────────────────────────
@@ -70,12 +83,16 @@ export const fetchStaff = async () => {
 };
 
 export const upsertStaff = async (staff) => {
-  const rows = await upsert("staff", { id: staff.id || undefined, name: staff.name, role: staff.role });
+  // If id is a SEED id (not UUID), omit it so Supabase generates one
+  const row = { name: staff.name, role: staff.role };
+  if (isUUID(staff.id)) row.id = staff.id;
+  const rows = await upsert("staff", row);
   const d = rows[0];
   return { id: d.id, name: d.name, role: d.role };
 };
 
 export const deleteStaff = async (id) => {
+  if (!isUUID(id)) return; // SEED id — nothing to delete in Supabase
   await patch("staff", `id=eq.${id}`, { is_active: false });
 };
 
@@ -91,38 +108,61 @@ export const fetchVendors = async () => {
 
 export const upsertVendor = async (vendor) => {
   const row = {
-    id: vendor.id || undefined, name: vendor.name, contact_person: vendor.contact,
+    name: vendor.name, contact_person: vendor.contact,
     phone: vendor.phone, gstin: vendor.gstin, state: vendor.state,
     is_intra_state: vendor.intra, payment_terms: vendor.terms, category: vendor.category,
   };
+  if (isUUID(vendor.id)) row.id = vendor.id;
   const rows = await upsert("vendors", row);
   return { ...vendor, id: rows[0].id };
 };
 
 export const deleteVendor = async (id) => {
+  if (!isUUID(id)) return;
   await patch("vendors", `id=eq.${id}`, { is_active: false });
 };
 
 // ── ITEMS ─────────────────────────────────────────────────────────
 export const fetchItems = async () => {
-  const data = await get("items", "is_active=eq.true&order=name");
+  const [data, viData] = await Promise.all([
+    get("items", "is_active=eq.true&order=name"),
+    get("vendor_items", "select=item_id,vendor_id"),
+  ]);
+  // Build item→vendor map (use first match per item)
+  const viMap = {};
+  viData.forEach(vi => { if (!viMap[vi.item_id]) viMap[vi.item_id] = vi.vendor_id; });
   return data.map((i) => ({
     id: i.id, name: i.name, unit: i.unit, category: i.category || "",
-    hsn: i.hsn_code || "", gst: i.gst_rate || 0, vid: "",
+    hsn: i.hsn_code || "", gst: i.gst_rate || 0, vid: viMap[i.id] || "",
   }));
 };
 
 export const upsertItem = async (item) => {
   const row = {
-    id: item.id || undefined, name: item.name, unit: item.unit,
-    category: item.category, hsn_code: item.hsn, gst_rate: item.gst,
+    name: item.name, unit: item.unit,
+    category: item.category || null, hsn_code: item.hsn || null, gst_rate: item.gst || 0,
   };
+  if (isUUID(item.id)) row.id = item.id;
   const rows = await upsert("items", row);
-  return { ...item, id: rows[0].id };
+  const itemId = rows[0].id;
+
+  // Also upsert vendor_items mapping if vendor is provided
+  if (isUUID(item.vid)) {
+    await upsert("vendor_items", { item_id: itemId, vendor_id: item.vid });
+  }
+
+  return { ...item, id: itemId };
 };
 
 export const deleteItem = async (id) => {
+  if (!isUUID(id)) return;
   await patch("items", `id=eq.${id}`, { is_active: false });
+};
+
+// ── VENDOR-ITEM MAPPING ─────────────────────────────────────────
+export const upsertVendorItem = async (itemId, vendorId) => {
+  if (!isUUID(itemId) || !isUUID(vendorId)) return;
+  await upsert("vendor_items", { item_id: itemId, vendor_id: vendorId });
 };
 
 // ── PURCHASE ORDERS ───────────────────────────────────────────────
@@ -140,22 +180,33 @@ export const fetchPurchaseOrders = async () => {
 };
 
 export const createPurchaseOrder = async (po, staffId) => {
-  const numData = await rpc("generate_po_number");
-  const poNumber = numData || po.num;
-  const rows = await post("purchase_orders", {
-    po_number: poNumber, vendor_id: toUUID(po.vid), placed_by: toUUID(staffId),
-    placed_by_name: po.by, status: po.status || "draft", notes: po.notes || "",
-  });
+  const vendorId = toUUID(po.vid);
+  if (!vendorId) throw new Error("No vendor assigned — select a vendor before ordering");
+
+  const poNumber = (await rpc("generate_po_number")) || po.num;
+  const body = {
+    po_number: poNumber, vendor_id: vendorId,
+    placed_by_name: po.by || "", status: po.status || "draft",
+  };
+  const staffUUID = toUUID(staffId);
+  if (staffUUID) body.placed_by = staffUUID;
+
+  console.log("[novy] Creating PO:", JSON.stringify(body));
+  const rows = await post("purchase_orders", body);
   const d = rows[0];
-  const lines = po.lines.map((l) => ({
+
+  // Filter out lines with non-UUID item ids (SEED items)
+  const lines = po.lines.filter(l => isUUID(l.iid)).map((l) => ({
     po_id: d.id, item_id: l.iid, item_name: l.name,
-    qty: l.qty, unit: l.unit, delivery_date: l.delDate || null, notes: l.notes || "",
+    qty: Number(l.qty), unit: l.unit, delivery_date: l.delDate || null, notes: l.notes || "",
   }));
+  console.log("[novy] PO lines:", lines.length);
   if (lines.length > 0) await post("po_lines", lines);
   return { ...po, id: d.id, num: poNumber };
 };
 
 export const updatePOStatus = async (poId, status) => {
+  if (!isUUID(poId)) return; // Local-only PO
   await patch("purchase_orders", `id=eq.${poId}`, { status, updated_at: new Date().toISOString() });
 };
 
@@ -176,17 +227,22 @@ export const fetchGRNs = async () => {
 };
 
 export const createGRN = async (grn) => {
-  const numData = await rpc("generate_grn_number");
-  const grnNumber = numData || grn.grnNum;
+  const vendorId = toUUID(grn.vid);
+  const poId = toUUID(grn.poId);
+  if (!vendorId) throw new Error("GRN: vendor ID is not valid");
+  if (!poId) throw new Error("GRN: PO was not synced to database yet");
+
+  const grnNumber = (await rpc("generate_grn_number")) || grn.grnNum;
   const rows = await post("grns", {
-    grn_number: grnNumber, po_id: grn.poId, po_number: grn.poNum,
-    vendor_id: toUUID(grn.vid), received_by_name: grn.signOff, sign_off_name: grn.signOff,
+    grn_number: grnNumber, po_id: poId, po_number: grn.poNum,
+    vendor_id: vendorId, received_by_name: grn.signOff, sign_off_name: grn.signOff,
     has_discrepancy: grn.hasDisc, vendor_invoice_number: grn.vendorInvNum || "", notes: grn.notes || "",
   });
   const d = rows[0];
-  const lines = grn.lines.map((l) => ({
+
+  const lines = grn.lines.filter(l => isUUID(l.iid)).map((l) => ({
     grn_id: d.id, item_id: l.iid, item_name: l.name, unit: l.unit,
-    qty_ordered: l.qty, qty_received: l.qtyRec,
+    qty_ordered: Number(l.qty), qty_received: Number(l.qtyRec),
     discrepancy_reason: l.discReason || null, discrepancy_notes: l.discNotes || null,
   }));
   if (lines.length > 0) await post("grn_lines", lines);
@@ -194,6 +250,7 @@ export const createGRN = async (grn) => {
 };
 
 export const updateGRNVendorInvoice = async (grnId, vendorInvNum) => {
+  if (!isUUID(grnId)) return;
   await patch("grns", `id=eq.${grnId}`, { vendor_invoice_number: vendorInvNum });
 };
 
@@ -220,21 +277,29 @@ export const fetchInvoices = async () => {
 };
 
 export const createInvoice = async (inv) => {
-  const numData = await rpc("generate_invoice_number");
-  const invNumber = numData || inv.num;
-  const rows = await post("invoices", {
-    invoice_number: invNumber, grn_id: inv.grnId, grn_number: inv.grnNum,
-    po_number: inv.poNum, vendor_id: toUUID(inv.vid), vendor_name: inv.vname,
+  const vendorId = toUUID(inv.vid);
+  const grnId = toUUID(inv.grnId);
+  if (!vendorId) throw new Error("Invoice: vendor ID is not valid");
+
+  const invNumber = (await rpc("generate_invoice_number")) || inv.num;
+  const body = {
+    invoice_number: invNumber, grn_number: inv.grnNum,
+    po_number: inv.poNum, vendor_id: vendorId, vendor_name: inv.vname,
     vendor_gstin: inv.vgstin, vendor_invoice_number: inv.vendorInvNum,
     is_intra_state: inv.intra, due_date: inv.due, base_total: inv.base,
     extra_charges: inv.extra?.amt || 0, extra_charges_label: inv.extra?.label || "",
     cgst: inv.cgst, sgst: inv.sgst, igst: inv.igst,
     total_with_gst: inv.totalGST, created_by_name: inv.createdBy || "",
-  });
+  };
+  if (grnId) body.grn_id = grnId;
+
+  const rows = await post("invoices", body);
   const d = rows[0];
-  const lines = inv.lines.map((l) => ({
+
+  const lines = inv.lines.filter(l => isUUID(l.iid)).map((l) => ({
     invoice_id: d.id, item_id: l.iid, item_name: l.name, hsn_code: l.hsn,
-    qty: l.qty, unit: l.unit, unit_price: l.price, gst_rate: l.gst, line_base: l.lineBase,
+    qty: Number(l.qty), unit: l.unit, unit_price: Number(l.price),
+    gst_rate: Number(l.gst), line_base: Number(l.lineBase),
   }));
   if (lines.length > 0) await post("invoice_lines", lines);
   return { ...inv, id: d.id, num: invNumber };
@@ -251,8 +316,13 @@ export const fetchPayments = async () => {
 };
 
 export const createPayment = async (payment) => {
+  const invoiceId = toUUID(payment.invId);
+  const vendorId = toUUID(payment.vid);
+  if (!invoiceId) throw new Error("Payment: invoice not synced to DB");
+  if (!vendorId) throw new Error("Payment: vendor ID is not valid");
+
   const rows = await post("payments", {
-    invoice_id: toUUID(payment.invId), vendor_id: toUUID(payment.vid), amount: payment.amount,
+    invoice_id: invoiceId, vendor_id: vendorId, amount: payment.amount,
     payment_date: payment.date, method: payment.method,
     reference_number: payment.ref, recorded_by_name: payment.by,
   });
@@ -277,18 +347,28 @@ export const fetchCreditNotes = async () => {
 };
 
 export const createCreditNote = async (cn) => {
-  const numData = await rpc("generate_cn_number");
-  const cnNumber = numData || cn.num;
-  const rows = await post("credit_notes", {
-    cn_number: cnNumber, grn_id: cn.grnId, grn_number: cn.grnNum,
-    invoice_id: toUUID(cn.invId), vendor_id: toUUID(cn.vid), vendor_name: cn.vname,
+  const vendorId = toUUID(cn.vid);
+  if (!vendorId) throw new Error("Credit note: vendor ID is not valid");
+
+  const cnNumber = (await rpc("generate_cn_number")) || cn.num;
+  const body = {
+    cn_number: cnNumber, grn_number: cn.grnNum,
+    vendor_id: vendorId, vendor_name: cn.vname,
     reason: cn.reason, base_total: cn.base, cgst: cn.cgst, sgst: cn.sgst,
     igst: cn.igst, total_with_gst: cn.totalGST, created_by_name: cn.createdBy || "",
-  });
+  };
+  const grnId = toUUID(cn.grnId);
+  const invId = toUUID(cn.invId);
+  if (grnId) body.grn_id = grnId;
+  if (invId) body.invoice_id = invId;
+
+  const rows = await post("credit_notes", body);
   const d = rows[0];
-  const lines = cn.lines.filter((l) => l.returnQty > 0).map((l) => ({
+
+  const lines = cn.lines.filter(l => l.returnQty > 0 && isUUID(l.iid)).map((l) => ({
     credit_note_id: d.id, item_id: l.iid, item_name: l.name, unit: l.unit,
-    return_qty: l.returnQty, unit_price: l.price, reason: l.reason, line_base: l.lineBase,
+    return_qty: Number(l.returnQty), unit_price: Number(l.price),
+    reason: l.reason, line_base: Number(l.lineBase),
   }));
   if (lines.length > 0) await post("credit_note_lines", lines);
   return { ...cn, id: d.id, num: cnNumber };
@@ -296,17 +376,70 @@ export const createCreditNote = async (cn) => {
 
 // ── PRICE HISTORY ─────────────────────────────────────────────────
 export const savePriceHistory = async (entries) => {
-  const rows = entries.map((e) => ({
-    item_id: toUUID(e.iid), vendor_id: toUUID(e.vid), item_name: e.name,
-    vendor_name: e.vname, unit_price: e.price, source: "grn",
-  }));
-  await post("price_history", rows);
+  // Filter out entries with non-UUID item/vendor ids
+  const rows = entries
+    .filter(e => isUUID(e.iid) && isUUID(e.vid))
+    .map((e) => ({
+      item_id: e.iid, vendor_id: e.vid, item_name: e.name,
+      vendor_name: e.vname, unit_price: e.price, source: "grn",
+    }));
+  if (rows.length > 0) await post("price_history", rows);
 };
 
 export const fetchPriceHistory = async () => {
   const data = await get("price_history", "order=created_at.desc&limit=500");
   return data.map((p) => ({
-    iid: p.item_id, vid: p.vendor_id, name: p.item_name,
+    id: p.id, iid: p.item_id, vid: p.vendor_id, name: p.item_name,
     vname: p.vendor_name, price: Number(p.unit_price), date: p.recorded_date,
   }));
+};
+
+// ── DIAGNOSTICS ──────────────────────────────────────────────────
+export const diagnose = async () => {
+  const results = [];
+  const log = (msg) => { console.log("[diag]", msg); results.push(msg); };
+
+  // 1. Check env vars
+  if (!URL) { log("✗ VITE_SUPABASE_URL is not set!"); return results; }
+  if (!KEY) { log("✗ VITE_SUPABASE_ANON_KEY is not set!"); return results; }
+  log(`✓ URL: ${URL}`);
+  log(`✓ KEY: ${KEY.slice(0, 20)}...`);
+
+  // 2. Test reads
+  for (const t of ["staff", "vendors", "items", "vendor_items", "purchase_orders", "grns", "invoices"]) {
+    try {
+      const d = await get(t, "limit=1");
+      log(`✓ READ ${t}: OK (${d.length} sample rows)`);
+    } catch (e) { log(`✗ READ ${t}: ${e.message}`); }
+  }
+
+  // 3. Test write
+  try {
+    const vendors = await get("vendors", "limit=1&select=id");
+    if (!vendors[0]) { log("✗ No vendors — cannot test write"); }
+    else {
+      const testNum = `TEST-${Date.now()}`;
+      const r = await fetch(`${REST}/purchase_orders`, {
+        method: "POST", headers: hdrs(), body: JSON.stringify({
+          po_number: testNum, vendor_id: vendors[0].id, status: "draft",
+        }),
+      });
+      const body = await r.text();
+      if (r.ok) {
+        log(`✓ WRITE purchase_orders: OK`);
+        try { const d = JSON.parse(body); await del("purchase_orders", `id=eq.${d[0]?.id}`); log("  (test row cleaned up)"); } catch (_) {}
+      } else {
+        log(`✗ WRITE purchase_orders: ${r.status} ${body}`);
+      }
+    }
+  } catch (e) { log(`✗ WRITE test error: ${e.message}`); }
+
+  // 4. Check RPC functions
+  for (const fn of ["generate_po_number", "generate_grn_number", "generate_invoice_number", "generate_cn_number"]) {
+    const r = await rpc(fn);
+    log(r ? `✓ RPC ${fn}: "${r}"` : `⚠ RPC ${fn}: not found (using local fallback)`);
+  }
+
+  console.log("\n=== DIAGNOSIS ===\n" + results.join("\n"));
+  return results;
 };
