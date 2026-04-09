@@ -991,15 +991,22 @@ export default function App() {
         // Merge into today's existing draft
         const merged = [...existingDraft.lines];
         lines.forEach(l => { if(!merged.find(m=>m.iid===l.iid)) merged.push(l); });
-        setOrders(p => p.map(o => o.id === existingDraft.id ? {...o, lines: merged} : o));
+        const updated = {...existingDraft, lines: merged};
+        setOrders(p => p.map(o => o.id === existingDraft.id ? updated : o));
         notify("Items added to today's draft");
+        // Sync updated draft to Supabase
+        try { await db.updateDraftPO(updated); } catch(e) { console.error("[novy] Draft update sync:", e.message); }
       } else {
         const num = genNum("PO", td(), orders);
         const newPO = {id:uid(), num, date:td(), by:user.name, status:"draft", vid:"", lines, total:0};
         setOrders(p=>[...p, newPO]);
         notify("Draft order created");
+        // Sync new draft to Supabase immediately so other devices can see it
+        try {
+          const saved = await db.saveDraftPO(newPO, user.id);
+          if (saved.id !== newPO.id) setOrders(p=>p.map(o=>o.id===newPO.id?{...o,id:saved.id,num:saved.num}:o));
+        } catch(e) { console.error("[novy] Draft save sync:", e.message); notify("Draft saved locally, sync failed", false); }
       }
-      // Drafts stay local — synced to Supabase when manager assigns vendor & marks sent
       setLines([]); setSearch(""); setActiveCat("");
     };
 
@@ -1425,7 +1432,9 @@ export default function App() {
                         const byVendor = {};
                         o.lines.forEach(l=>{if(!byVendor[l.vid])byVendor[l.vid]=[];byVendor[l.vid].push(l);});
                         const vendorIds = Object.keys(byVendor);
-                        // Remove original draft
+                        // Delete the draft from Supabase first
+                        try { await db.deleteDraftPO(o.id); } catch(e) { console.error("[novy] Draft delete:", e.message); }
+                        // Remove original draft from local state
                         setOrders(p=>p.filter(x=>x.id!==o.id));
                         let syncOk = true;
                         for(const vid of vendorIds){
@@ -1441,11 +1450,11 @@ export default function App() {
                     <Btn v="ghost" s onClick={()=>printPO(o)}>PDF</Btn>
                   </div>
                 </div>
-                {o.status==="draft"&&<div className="flex items-center gap-2 mb-2"><span className="text-xs text-gray-500">Assign all to:</span><select className="border rounded px-2 py-1 text-xs" value="" onChange={e=>{const vid=e.target.value;if(!vid)return;const vname=vendors.find(v=>v.id===vid)?.name||"";setOrders(p=>p.map(x=>x.id===o.id?{...x,vid,lines:x.lines.map(ll=>({...ll,vid,vname}))}:x));}}><option value="">Pick vendor...</option>{vendors.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>}
+                {o.status==="draft"&&<div className="flex items-center gap-2 mb-2"><span className="text-xs text-gray-500">Assign all to:</span><select className="border rounded px-2 py-1 text-xs" value="" onChange={async e=>{const vid=e.target.value;if(!vid)return;const vname=vendors.find(v=>v.id===vid)?.name||"";const updated={...o,vid,lines:o.lines.map(ll=>({...ll,vid,vname}))};setOrders(p=>p.map(x=>x.id===o.id?updated:x));try{await db.updateDraftPO(updated);}catch(err){console.error("[novy] Vendor assign sync:",err.message);}}}><option value="">Pick vendor...</option>{vendors.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>}
                 <div className="overflow-x-auto">
                 <table className="w-full text-xs min-w-full sm:min-w-[600px]">
                   <thead className="bg-gray-50"><tr><th className="text-left px-2 sm:px-3 py-1">Item</th><th className="hidden sm:table-cell px-3 py-1">Qty</th><th className="px-2 sm:px-3 py-1">Vendor</th><th className="hidden lg:table-cell px-3 py-1">Delivery</th><th className="hidden xl:table-cell px-3 py-1">Notes</th></tr></thead>
-                  <tbody>{o.lines.map((l,i)=><tr key={i} className={`border-t ${!l.vid||l.vid==="unknown"?"bg-amber-50":""}`}><td className="px-2 sm:px-3 py-1 font-medium text-xs sm:text-sm">{l.name}</td><td className="hidden sm:table-cell px-3 py-1 text-center">{l.qty} {l.unit}</td><td className="px-2 sm:px-3 py-1">{o.status==="draft"?<select className="w-full border rounded px-1 py-1 text-xs" value={l.vid||""} onChange={e=>{const vid=e.target.value;const vname=vendors.find(v=>v.id===vid)?.name||"";setOrders(p=>p.map(x=>x.id===o.id?{...x,lines:x.lines.map((ll,j)=>j===i?{...ll,vid,vname}:ll)}:x));}}><option value="">Select vendor...</option>{vendors.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select>:<span className="text-xs text-gray-500">{vM[l.vid]?.name||"—"}</span>}</td><td className="hidden lg:table-cell px-3 py-1 text-gray-500 text-xs">{fmt(l.delDate)}</td><td className="hidden xl:table-cell px-3 py-1 text-gray-400 text-xs">{l.notes||"—"}</td></tr>)}</tbody>
+                  <tbody>{o.lines.map((l,i)=><tr key={i} className={`border-t ${!l.vid||l.vid==="unknown"?"bg-amber-50":""}`}><td className="px-2 sm:px-3 py-1 font-medium text-xs sm:text-sm">{l.name}</td><td className="hidden sm:table-cell px-3 py-1 text-center">{l.qty} {l.unit}</td><td className="px-2 sm:px-3 py-1">{o.status==="draft"?<select className="w-full border rounded px-1 py-1 text-xs" value={l.vid||""} onChange={async e=>{const vid=e.target.value;const vname=vendors.find(v=>v.id===vid)?.name||"";const updatedLines=o.lines.map((ll,j)=>j===i?{...ll,vid,vname}:ll);const updated={...o,lines:updatedLines};setOrders(p=>p.map(x=>x.id===o.id?updated:x));try{await db.updateDraftPO(updated);}catch(err){console.error("[novy] Line vendor sync:",err.message);}}}><option value="">Select vendor...</option>{vendors.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select>:<span className="text-xs text-gray-500">{vM[l.vid]?.name||"—"}</span>}</td><td className="hidden lg:table-cell px-3 py-1 text-gray-500 text-xs">{fmt(l.delDate)}</td><td className="hidden xl:table-cell px-3 py-1 text-gray-400 text-xs">{l.notes||"—"}</td></tr>)}</tbody>
                 </table>
                 </div>
               </div>
@@ -1482,7 +1491,7 @@ export default function App() {
         <div className="flex justify-end gap-2">
           <Btn v="danger" s onClick={async()=>{setOrders(p=>p.map(o=>o.id===po.id?{...o,status:"cancelled"}:o));setModal(null);try{await db.updatePOStatus(po.id,"cancelled");notify("PO cancelled");}catch(e){notify("Cancel not synced",false);}}}>Cancel PO</Btn>
           <Btn v="outline" onClick={()=>setModal(null)}>Close</Btn>
-          <Btn onClick={()=>{setOrders(p=>p.map(o=>o.id===po.id?{...o,lines}:o));setModal(null);}}>Save Changes</Btn>
+          <Btn onClick={async()=>{const updated={...po,lines};setOrders(p=>p.map(o=>o.id===po.id?updated:o));setModal(null);if(po.status==="draft"){try{await db.updateDraftPO(updated);notify("Draft updated");}catch(e){console.error("[novy] Draft edit sync:",e.message);}}}}>Save Changes</Btn>
         </div>
       </Modal>
     );
