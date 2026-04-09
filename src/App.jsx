@@ -1610,8 +1610,9 @@ export default function App() {
       pL.forEach(l=>{
         const prevEntry = priceHist.filter(p=>p.itemId===l.iid&&p.vendorId===grn.vid).sort((a,b)=>b.date?.localeCompare(a.date))[0];
         setPriceHist(p=>[...p,{id:uid(),itemId:l.iid,vendorId:grn.vid,itemName:l.name,vendorName:vendor?.name,price:l.price,prevPrice:prevEntry?.price||0,date:td(),grnNum:grn.grnNum,invNum}]);
-        // Update item's default vendor
-        setItems(p=>p.map(it=>it.id===l.iid?{...it,vid:grn.vid}:it));
+        // Update item's default vendor and GST
+        setItems(p=>p.map(it=>it.id===l.iid?{...it,vid:grn.vid,gst:l.gst}:it));
+        try{db.upsertItem({id:l.iid,name:l.name,unit:l.unit,vid:grn.vid,gst:l.gst});}catch(e){console.warn("DB item default update failed:",e);}
       });
       const invL = pL.map(l=>{const qty=l.qtyRec||l.qty;const lb=l.totalOverride!==null?l.totalOverride:qty*l.price;const g=calcGST(lb,l.gst,vendor?.intra);return{...l,qty,lineBase:lb,lineCgst:g.cgst,lineSgst:g.sgst,lineIgst:g.igst,lineTotal:g.total};});
       const newInv = {id:uid(),num:invNum,grnId:grn.id,grnNum:grn.grnNum,poNum:po?.num,vid:grn.vid,vname:vendor?.name,vgstin:vendor?.gstin,intra:vendor?.intra,date:td(),due:addD(td(),vendor?.terms||30),base:baseTotal,cgst:gstB.cgst,sgst:gstB.sgst,igst:gstB.igst,totalGST:grand,lines:invL,extra:extraAmt>0?{label:extraLabel,amt:extraAmt}:null,vendorInvNum};
