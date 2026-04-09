@@ -708,7 +708,6 @@ const SEED = {
     {id:"i560",name:"Kikkoman Ponzu",unit:"piece",category:"Sauces & Condiments",gst:0,vid:""},
     {id:"i561",name:"Mirin",unit:"piece",category:"Vinegars",gst:0,vid:""},
     {id:"i562",name:"Bacon",unit:"piece",category:"Butchery",gst:0,vid:""}
-  ]
   ],
 };
 
