@@ -170,13 +170,63 @@ export const fetchPurchaseOrders = async () => {
   const data = await get("purchase_orders", "select=*,po_lines(*)&order=created_at.desc");
   return data.map((po) => ({
     id: po.id, num: po.po_number, date: po.created_at?.slice(0, 10),
-    by: po.placed_by_name || "", status: po.status, vid: po.vendor_id,
+    by: po.placed_by_name || "", status: po.status, vid: po.vendor_id || "",
     lines: (po.po_lines || []).map((l) => ({
       iid: l.item_id, name: l.item_name, qty: Number(l.qty), unit: l.unit,
-      vid: po.vendor_id, vname: "", delDate: l.delivery_date || "", notes: l.notes || "",
+      vid: l.vendor_id || po.vendor_id || "", vname: "", delDate: l.delivery_date || "", notes: l.notes || "",
     })),
     total: 0,
   }));
+};
+
+// Save a draft PO — vendor is optional (staff can create without vendor)
+export const saveDraftPO = async (po, staffId) => {
+  const vendorId = toUUID(po.vid) || null; // NULL is fine for drafts
+  const poNumber = (await rpc("generate_po_number")) || po.num;
+  const body = {
+    po_number: poNumber, vendor_id: vendorId,
+    placed_by_name: po.by || "", status: "draft",
+  };
+  if (isUUID(po.id)) body.id = po.id;
+  const staffUUID = toUUID(staffId);
+  if (staffUUID) body.placed_by = staffUUID;
+
+  console.log("[novy] Saving draft PO:", JSON.stringify(body));
+  const rows = await post("purchase_orders", body);
+  const d = rows[0];
+
+  // Save lines — each line can have its own vendor_id for per-line assignment
+  const lines = po.lines.filter(l => isUUID(l.iid)).map((l) => ({
+    po_id: d.id, item_id: l.iid, item_name: l.name,
+    qty: Number(l.qty), unit: l.unit, vendor_id: toUUID(l.vid) || null,
+    delivery_date: l.delDate || null, notes: l.notes || "",
+  }));
+  if (lines.length > 0) await post("po_lines", lines);
+  return { ...po, id: d.id, num: poNumber };
+};
+
+// Update an existing draft PO (lines + vendor assignments)
+export const updateDraftPO = async (po) => {
+  if (!isUUID(po.id)) return;
+  const vendorId = toUUID(po.vid) || null;
+  await patch("purchase_orders", `id=eq.${po.id}`, {
+    vendor_id: vendorId, updated_at: new Date().toISOString(),
+  });
+  // Delete old lines and re-insert (simplest approach for draft edits)
+  await del("po_lines", `po_id=eq.${po.id}`);
+  const lines = po.lines.filter(l => isUUID(l.iid)).map((l) => ({
+    po_id: po.id, item_id: l.iid, item_name: l.name,
+    qty: Number(l.qty), unit: l.unit, vendor_id: toUUID(l.vid) || null,
+    delivery_date: l.delDate || null, notes: l.notes || "",
+  }));
+  if (lines.length > 0) await post("po_lines", lines);
+};
+
+// Delete a draft PO (used when splitting into vendor-specific POs on "Mark Sent")
+export const deleteDraftPO = async (poId) => {
+  if (!isUUID(poId)) return;
+  await del("po_lines", `po_id=eq.${poId}`);
+  await del("purchase_orders", `id=eq.${poId}`);
 };
 
 export const createPurchaseOrder = async (po, staffId) => {
