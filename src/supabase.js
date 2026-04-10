@@ -453,6 +453,178 @@ export const fetchPriceHistory = async () => {
   }));
 };
 
+// ── DIRECT ORDERS ────────────────────────────────────────────────
+export const fetchDirectOrders = async () => {
+  const data = await get("direct_orders", "select=*,direct_order_lines(*)&order=created_at.desc");
+  return data.map((d) => ({
+    id: d.id, num: d.order_number, vid: d.vendor_id || "", vname: d.vendor_name || "",
+    invNum: d.invoice_number || "", date: d.order_date, category: d.category || "",
+    total: Number(d.total_amount), gst: Number(d.gst_amount),
+    paidStatus: d.paid_status, payMethod: d.payment_method || "",
+    payDate: d.payment_date || "", payRef: d.payment_reference || "",
+    notes: d.notes || "", by: d.created_by_name || "",
+    lines: (d.direct_order_lines || []).map((l) => ({
+      id: l.id, iid: l.item_id || "", name: l.item_name, qty: Number(l.qty),
+      unit: l.unit, price: Number(l.unit_price), lineTotal: Number(l.line_total),
+      category: l.category || "", gst: Number(l.gst_rate), hsn: l.hsn_code || "",
+    })),
+  }));
+};
+
+export const createDirectOrder = async (order) => {
+  const vendorId = toUUID(order.vid);
+  const doNumber = (await rpc("generate_do_number")) || order.num;
+  const body = {
+    order_number: doNumber, vendor_id: vendorId, vendor_name: order.vname,
+    invoice_number: order.invNum, order_date: order.date, category: order.category,
+    total_amount: order.total, gst_amount: order.gst,
+    paid_status: order.paidStatus, payment_method: order.payMethod || null,
+    payment_date: order.payDate || null, payment_reference: order.payRef || null,
+    notes: order.notes, created_by_name: order.by,
+  };
+  if (isUUID(order.id)) body.id = order.id;
+  const rows = await post("direct_orders", body);
+  const d = rows[0];
+
+  const lines = order.lines.map((l) => ({
+    direct_order_id: d.id, item_id: toUUID(l.iid) || null, item_name: l.name,
+    qty: Number(l.qty), unit: l.unit, unit_price: Number(l.price),
+    line_total: Number(l.lineTotal), category: l.category,
+    gst_rate: Number(l.gst), hsn_code: l.hsn || null,
+  }));
+  if (lines.length > 0) await post("direct_order_lines", lines);
+  return { ...order, id: d.id, num: doNumber };
+};
+
+export const updateDirectOrder = async (order) => {
+  if (!isUUID(order.id)) return;
+  await patch("direct_orders", `id=eq.${order.id}`, {
+    paid_status: order.paidStatus, payment_method: order.payMethod || null,
+    payment_date: order.payDate || null, payment_reference: order.payRef || null,
+    notes: order.notes, updated_at: new Date().toISOString(),
+  });
+};
+
+// ── REQUISITIONS (dry store) ─────────────────────────────────────
+export const fetchRequisitions = async () => {
+  const data = await get("requisitions", "select=*,requisition_lines(*)&order=created_at.desc");
+  return data.map((r) => ({
+    id: r.id, staffId: r.staff_id, staffName: r.staff_name,
+    date: r.requisition_date, status: r.status, notes: r.notes || "",
+    lines: (r.requisition_lines || []).map((l) => ({
+      id: l.id, iid: l.item_id || "", name: l.item_name, qty: Number(l.qty), unit: l.unit,
+    })),
+  }));
+};
+
+export const createRequisition = async (req) => {
+  const staffId = toUUID(req.staffId);
+  const body = {
+    staff_id: staffId, staff_name: req.staffName,
+    requisition_date: req.date, notes: req.notes || "",
+  };
+  if (isUUID(req.id)) body.id = req.id;
+  const rows = await post("requisitions", body);
+  const d = rows[0];
+
+  const lines = req.lines.map((l) => ({
+    requisition_id: d.id, item_id: toUUID(l.iid) || null,
+    item_name: l.name, qty: Number(l.qty), unit: l.unit,
+  }));
+  if (lines.length > 0) await post("requisition_lines", lines);
+  return { ...req, id: d.id };
+};
+
+export const updateRequisition = async (req) => {
+  if (!isUUID(req.id)) return;
+  await patch("requisitions", `id=eq.${req.id}`, {
+    notes: req.notes || "", updated_at: new Date().toISOString(),
+  });
+  // Re-insert lines
+  await del("requisition_lines", `requisition_id=eq.${req.id}`);
+  const lines = req.lines.map((l) => ({
+    requisition_id: req.id, item_id: toUUID(l.iid) || null,
+    item_name: l.name, qty: Number(l.qty), unit: l.unit,
+  }));
+  if (lines.length > 0) await post("requisition_lines", lines);
+};
+
+export const softDeleteRequisition = async (reqId) => {
+  if (!isUUID(reqId)) return;
+  await patch("requisitions", `id=eq.${reqId}`, { status: "deleted", updated_at: new Date().toISOString() });
+};
+
+export const createRequisitionEdit = async (edit) => {
+  const body = {
+    requisition_id: edit.reqId, line_id: toUUID(edit.lineId) || null,
+    field_changed: edit.field, old_value: edit.oldVal,
+    new_value: edit.newVal, action: edit.action, edited_by_name: edit.by,
+  };
+  await post("requisition_edits", body);
+};
+
+export const fetchRequisitionEdits = async (reqId) => {
+  if (!isUUID(reqId)) return [];
+  const data = await get("requisition_edits", `requisition_id=eq.${reqId}&order=edited_at.desc`);
+  return data.map((e) => ({
+    id: e.id, reqId: e.requisition_id, lineId: e.line_id,
+    field: e.field_changed, oldVal: e.old_value, newVal: e.new_value,
+    action: e.action, by: e.edited_by_name, at: e.edited_at,
+  }));
+};
+
+// ── DRY STORE BALANCES ───────────────────────────────────────────
+export const fetchDryStoreBalances = async (month) => {
+  const q = month ? `month=eq.${month}&order=item_name` : "order=item_name";
+  const data = await get("dry_store_balances", q);
+  return data.map((b) => ({
+    id: b.id, iid: b.item_id, name: b.item_name, month: b.month,
+    opening: Number(b.opening_balance), closing: b.closing_balance != null ? Number(b.closing_balance) : null,
+    notes: b.notes || "",
+  }));
+};
+
+export const upsertDryStoreBalance = async (balance) => {
+  const row = {
+    item_id: balance.iid, item_name: balance.name, month: balance.month,
+    opening_balance: balance.opening,
+    closing_balance: balance.closing != null ? balance.closing : null,
+    notes: balance.notes || "", updated_at: new Date().toISOString(),
+  };
+  if (isUUID(balance.id)) row.id = balance.id;
+  const rows = await upsert("dry_store_balances", row);
+  return { ...balance, id: rows[0].id };
+};
+
+// ── PERISHABLE LOGS ──────────────────────────────────────────────
+export const fetchPerishableLogs = async () => {
+  const data = await get("perishable_logs", "order=created_at.desc&limit=2000");
+  return data.map((l) => ({
+    id: l.id, iid: l.item_id, name: l.item_name, category: l.category,
+    date: l.log_date, qtyUsed: Number(l.qty_used), qtyWasted: Number(l.qty_wasted),
+    loggedBy: l.logged_by, loggedByName: l.logged_by_name || "", notes: l.notes || "",
+  }));
+};
+
+export const createPerishableLog = async (log) => {
+  const body = {
+    item_id: toUUID(log.iid), item_name: log.name, category: log.category,
+    log_date: log.date, qty_used: log.qtyUsed, qty_wasted: log.qtyWasted,
+    logged_by: toUUID(log.loggedBy), logged_by_name: log.loggedByName, notes: log.notes || "",
+  };
+  if (isUUID(log.id)) body.id = log.id;
+  const rows = await post("perishable_logs", body);
+  return { ...log, id: rows[0].id };
+};
+
+export const updatePerishableLog = async (log) => {
+  if (!isUUID(log.id)) return;
+  await patch("perishable_logs", `id=eq.${log.id}`, {
+    qty_used: log.qtyUsed, qty_wasted: log.qtyWasted,
+    notes: log.notes || "", updated_at: new Date().toISOString(),
+  });
+};
+
 // ── DIAGNOSTICS ──────────────────────────────────────────────────
 export const diagnose = async () => {
   const results = [];

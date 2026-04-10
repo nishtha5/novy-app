@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useRef, useEffect } from "react";
+import { useState, useMemo, useCallback, useRef, useEffect, Fragment } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 import * as db from "./supabase.js";
 
@@ -12,6 +12,10 @@ const GST_RATES = [0, 5, 12, 18, 28];
 const DISC_REASONS = ["Short delivery","Damaged in transit","Wrong item","Quality issue","Expired","Packaging issue","Order cancelled by us","Other"];
 const COLORS = ["#f97316","#3b82f6","#10b981","#ef4444","#8b5cf6","#ec4899","#14b8a6","#f59e0b","#6366f1","#84cc16"];
 const PO_STATUSES = { draft:"Draft", sent_to_vendor:"Sent to Vendor", partially_received:"Partially Received", received:"Received", priced:"Priced", grn_done:"GRN Done", cancelled:"Cancelled" };
+const DIRECT_CATEGORIES = ["Equipment","Furniture","Crockery","Maintenance","Repairs","Stationery & Supplies","Kitchen Equipment","Electronics","Uniforms","Decor","Miscellaneous"];
+const DRY_STORE_CATS = new Set(["Dry Grocery","Dry Fruits & Nuts","Spices & Seasonings","Pulses & Lentils","Rice & Grains","Oils & Condiments","Sauces & Condiments","Canned Goods","Baking","Packaging & Cleaning","Syrups & Sweeteners","Vinegars","Pickles & Preserves"]);
+const PERISHABLE_CATS = new Set(["Vegetables","Fruits","Butchery","Microgreens & Herbs","Mushrooms","Seafood"]);
+const RECON_PASSWORD = "recon123";
 
 // Units that allow decimals (weight/volume) vs whole-number-only (countable)
 const DECIMAL_UNITS = new Set(["kg","g","litre","ml"]);
@@ -811,6 +815,10 @@ export default function App() {
   const [creditNotes, setCreditNotes] = useState([]);
   const [payments, setPayments] = useState([]);
   const [priceHist, setPriceHist] = useState([]);
+  const [directOrders, setDirectOrders] = useState([]);
+  const [requisitions, setRequisitions] = useState([]);
+  const [dryBalances, setDryBalances] = useState([]);
+  const [perishLogs, setPerishLogs] = useState([]);
   const [tab, setTab] = useState("place_order");
   const [modal, setModal] = useState(null);
   const [setupUnlocked, setSetupUnlocked] = useState(false);
@@ -842,7 +850,7 @@ export default function App() {
     if (silent && modal) return;
     refreshing.current = true;
     try {
-      const [s, v, i, o, g, inv, cn, pay, ph] = await Promise.all([
+      const [s, v, i, o, g, inv, cn, pay, ph, dOrd, req, dBal, pLog] = await Promise.all([
         db.fetchStaff(),
         db.fetchVendors(),
         db.fetchItems(),
@@ -852,6 +860,10 @@ export default function App() {
         db.fetchCreditNotes(),
         db.fetchPayments(),
         db.fetchPriceHistory(),
+        db.fetchDirectOrders(),
+        db.fetchRequisitions(),
+        db.fetchDryStoreBalances(),
+        db.fetchPerishableLogs(),
       ]);
       if (s.length > 0) smartSet("staff", setStaff, s);
       if (v.length > 0) smartSet("vendors", setVendors, v);
@@ -862,6 +874,10 @@ export default function App() {
       smartSet("creditNotes", setCreditNotes, cn);
       smartSet("payments", setPayments, pay);
       smartSet("priceHist", setPriceHist, ph);
+      smartSet("directOrders", setDirectOrders, dOrd);
+      smartSet("requisitions", setRequisitions, req);
+      smartSet("dryBalances", setDryBalances, dBal);
+      smartSet("perishLogs", setPerishLogs, pLog);
       setDbReady(true);
       if (!silent) console.log("[novy] Data loaded at", new Date().toLocaleTimeString());
     } catch (err) {
@@ -987,13 +1003,15 @@ export default function App() {
   };
 
   // ═════════════════════════════════════════
-  // PLACE ORDER (Staff)
+  // PLACE ORDER (Staff) — Cart-based with My Orders
   // ═════════════════════════════════════════
   const PlaceOrder = () => {
+    const [view, setView] = useState("new"); // "new" or "my"
     const [search, setSearch] = useState("");
     const [lines, setLines] = useState([]);
     const [activeCat, setActiveCat] = useState("");
-    const ref = useRef(null);
+    const [cartOpen, setCartOpen] = useState(false);
+    const searchRef = useRef(null);
     const results = search.length >= 1 ? items.filter(i=>i.name.toLowerCase().includes(search.toLowerCase())).slice(0,8) : [];
 
     const categories = useMemo(() => {
@@ -1005,122 +1023,203 @@ export default function App() {
 
     const add = (item) => {
       if(lines.find(l=>l.iid===item.id)) return;
-      const pv = prefV(item.id);
-      setLines(p=>[...p, {iid:item.id, name:item.name, unit:item.unit, qty:1, vid:pv?.id||"", vname:pv?.name||"", delDate:addD(td(),1), notes:"", gst:item.gst, hsn:item.hsn}]);
+      setLines(p=>[...p, {iid:item.id, name:item.name, unit:item.unit, qty:1, delDate:addD(td(),1), notes:"", gst:item.gst, hsn:item.hsn}]);
+      setCartOpen(true);
     };
 
     const submit = async () => {
       if(lines.length===0) return;
-      // Staff submits all items into a single draft PO (no vendor required)
-      // Manager assigns vendors later and splits when marking "Sent"
       const existingDraft = orders.find(o => o.by === user.name && o.date === td() && o.status === "draft");
       if (existingDraft) {
-        // Merge into today's existing draft
         const merged = [...existingDraft.lines];
-        lines.forEach(l => { if(!merged.find(m=>m.iid===l.iid)) merged.push(l); });
+        lines.forEach(l => { if(!merged.find(m=>m.iid===l.iid)) merged.push({...l, vid:"", vname:""}); });
         const updated = {...existingDraft, lines: merged};
         setOrders(p => p.map(o => o.id === existingDraft.id ? updated : o));
         notify("Items added to today's draft");
-        // Sync updated draft to Supabase
         try { await db.updateDraftPO(updated); } catch(e) { console.error("[novy] Draft update sync:", e.message); }
       } else {
         const num = genNum("PO", td(), orders);
-        const newPO = {id:uid(), num, date:td(), by:user.name, status:"draft", vid:"", lines, total:0};
+        const newPO = {id:uid(), num, date:td(), by:user.name, status:"draft", vid:"", lines:lines.map(l=>({...l,vid:"",vname:""})), total:0};
         setOrders(p=>[...p, newPO]);
         notify("Draft order created");
-        // Sync new draft to Supabase immediately so other devices can see it
         try {
           const saved = await db.saveDraftPO(newPO, user.id);
           if (saved.id !== newPO.id) setOrders(p=>p.map(o=>o.id===newPO.id?{...o,id:saved.id,num:saved.num}:o));
         } catch(e) { console.error("[novy] Draft save sync:", e.message); notify("Draft saved locally, sync failed", false); }
       }
-      setLines([]); setSearch(""); setActiveCat("");
+      setLines([]); setSearch(""); setActiveCat(""); setCartOpen(false);
+      setView("my"); // switch to My Orders so they can see it
     };
+
+    // My Orders: this staff member's orders
+    const myOrders = useMemo(() => orders.filter(o => o.by === user.name && o.status !== "cancelled").sort((a,b)=>(b.date||"").localeCompare(a.date||"")), [orders, user.name]);
 
     return (
       <div className="space-y-4">
-        <div className="bg-white rounded-xl border p-4">
-          <div className="relative mb-3">
-            <input ref={ref} type="text" placeholder="Search items..." className="w-full border rounded-lg px-3 py-2 text-sm" value={search} onChange={e=>setSearch(e.target.value)}/>
-            {results.length > 0 && (
-              <div className="absolute z-20 w-full mt-1 bg-white border rounded-xl shadow-lg max-h-52 overflow-y-auto">
-                {results.map(item=>{
-                  const added = lines.find(l=>l.iid===item.id);
-                  return (<button key={item.id} onClick={()=>!added && add(item)} className={`w-full text-left px-4 py-2.5 flex items-center gap-3 border-b last:border-0 text-sm ${added?"bg-green-50":"hover:bg-orange-50"}`}>
-                    <span className="font-medium flex-1">{item.name}</span><span className="text-gray-400 text-xs">{item.unit}</span>{added ? <span className="text-green-500 text-xs">✓</span> : <span className="text-orange-400 text-xs">+</span>}
-                  </button>);
-                })}
+        {/* Toggle: New Order / My Orders */}
+        <div className="flex gap-1 bg-gray-100 p-1 rounded-lg w-fit">
+          <button onClick={()=>setView("new")} className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-all ${view==="new"?"bg-white shadow text-orange-600":"text-gray-500"}`}>New Order</button>
+          <button onClick={()=>setView("my")} className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-all ${view==="my"?"bg-white shadow text-orange-600":"text-gray-500"}`}>My Orders{myOrders.length>0&&<span className="ml-1 px-1.5 py-0.5 text-[10px] rounded-full bg-orange-100 text-orange-700">{myOrders.length}</span>}</button>
+        </div>
+
+        {view==="new" && (
+          <div className="flex gap-4">
+            {/* Left: Item browser */}
+            <div className="flex-1 min-w-0">
+              <div className="bg-white rounded-xl border p-4">
+                <div className="relative mb-3">
+                  <input ref={searchRef} type="text" placeholder="Search items..." className="w-full border rounded-lg px-3 py-2 text-sm" value={search} onChange={e=>setSearch(e.target.value)}/>
+                  {results.length > 0 && (
+                    <div className="absolute z-20 w-full mt-1 bg-white border rounded-xl shadow-lg max-h-52 overflow-y-auto">
+                      {results.map(item=>{
+                        const added = lines.find(l=>l.iid===item.id);
+                        return (<button key={item.id} onClick={()=>{if(!added)add(item);setSearch("");}} className={`w-full text-left px-4 py-2.5 flex items-center gap-3 border-b last:border-0 text-sm ${added?"bg-green-50":"hover:bg-orange-50"}`}>
+                          <span className="font-medium flex-1">{item.name}</span><span className="text-gray-400 text-xs">{item.unit}</span>{added ? <span className="text-green-500 text-xs">✓</span> : <span className="text-orange-400 text-xs">+</span>}
+                        </button>);
+                      })}
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {catNames.map(cat=>(
+                    <button key={cat} onClick={()=>setActiveCat(activeCat===cat?"":cat)} className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all ${activeCat===cat?"bg-orange-500 text-white shadow-sm":"bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>
+                      {cat}<span className="ml-1 opacity-60">({categories[cat].length})</span>
+                    </button>
+                  ))}
+                </div>
+                {activeCat && categories[activeCat] && (
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-1.5 mt-2 max-h-64 overflow-y-auto border rounded-lg p-2 bg-gray-50">
+                    {categories[activeCat].map(item=>{
+                      const added = lines.find(l=>l.iid===item.id);
+                      return (<button key={item.id} onClick={()=>add(item)} className={`text-left px-3 py-2 rounded-lg text-xs border transition-all ${added?"bg-green-50 border-green-200 text-green-700":"bg-white border-gray-200 hover:border-orange-300 hover:bg-orange-50 text-gray-700"}`}>
+                        <span className="font-medium">{item.name}</span><span className="text-gray-400 ml-1">({item.unit})</span>{added && <span className="text-green-500 ml-1 font-bold">✓</span>}
+                      </button>);
+                    })}
+                  </div>
+                )}
+                {!activeCat && lines.length===0 && <div className="text-center text-gray-400 text-xs mt-4 py-4">Search or pick a category to start adding items</div>}
+              </div>
+            </div>
+
+            {/* Right: Cart sidebar (desktop) */}
+            <div className="hidden md:block w-80 flex-shrink-0">
+              <div className="bg-white rounded-xl border sticky top-28">
+                <div className="px-4 py-3 border-b flex items-center justify-between">
+                  <span className="text-sm font-bold text-gray-800">Cart</span>
+                  <span className="px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 text-xs font-bold">{lines.length}</span>
+                </div>
+                {lines.length===0?<div className="p-6 text-center text-gray-400 text-xs">Empty — add items from the left</div>:(
+                  <div className="max-h-[60vh] overflow-y-auto divide-y">
+                    {lines.map((l,i)=>(
+                      <div key={i} className="p-3">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="font-medium text-xs text-gray-800 truncate flex-1">{l.name}</span>
+                          <button onClick={()=>setLines(lines.filter((_,j)=>j!==i))} className="text-red-400 hover:text-red-600 text-sm ml-2">×</button>
+                        </div>
+                        <div className="grid grid-cols-3 gap-1.5">
+                          <div>
+                            <label className="text-[9px] text-gray-400 uppercase">Qty</label>
+                            <input type="number" min="0" step={qtyStep(l.unit)} className="w-full text-center border rounded px-1 py-1 text-xs" value={l.qty} onChange={e=>{const n=[...lines];n[i]={...n[i],qty:sanitizeQty(+e.target.value,l.unit)};setLines(n);}}/>
+                          </div>
+                          <div>
+                            <label className="text-[9px] text-gray-400 uppercase">Unit</label>
+                            <select className="w-full border rounded px-1 py-1 text-[10px]" value={l.unit} onChange={e=>{const n=[...lines];const u=e.target.value;n[i]={...n[i],unit:u,qty:sanitizeQty(n[i].qty,u)};setLines(n);}}>{UNITS.map(u=><option key={u} value={u}>{u}</option>)}</select>
+                          </div>
+                          <div>
+                            <label className="text-[9px] text-gray-400 uppercase">Delivery</label>
+                            <input type="date" className="w-full border rounded px-1 py-1 text-[10px]" value={l.delDate} onChange={e=>{const n=[...lines];n[i]={...n[i],delDate:e.target.value};setLines(n);}}/>
+                          </div>
+                        </div>
+                        <div className="mt-1">
+                          <input type="text" className="w-full border rounded px-2 py-1 text-[10px]" placeholder="Notes (optional)" value={l.notes} onChange={e=>{const n=[...lines];n[i]={...n[i],notes:e.target.value};setLines(n);}}/>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {lines.length>0&&(
+                  <div className="p-3 border-t flex gap-2">
+                    <Btn v="secondary" s onClick={()=>setLines([])}>Clear</Btn>
+                    <Btn s onClick={submit} className="flex-1">Place Order ({lines.length})</Btn>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Mobile: Floating cart button */}
+            <div className="md:hidden fixed bottom-20 right-4 z-30">
+              {lines.length>0&&!cartOpen&&(
+                <button onClick={()=>setCartOpen(true)} className="bg-orange-500 text-white w-14 h-14 rounded-full shadow-lg flex items-center justify-center text-lg font-bold relative">
+                  🛒<span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] w-5 h-5 rounded-full flex items-center justify-center">{lines.length}</span>
+                </button>
+              )}
+            </div>
+
+            {/* Mobile: Cart bottom sheet */}
+            {cartOpen && lines.length>0 && (
+              <div className="md:hidden fixed inset-0 z-40 flex flex-col">
+                <div className="flex-1 bg-black/30" onClick={()=>setCartOpen(false)}/>
+                <div className="bg-white rounded-t-2xl max-h-[70vh] overflow-y-auto">
+                  <div className="px-4 py-3 border-b flex items-center justify-between sticky top-0 bg-white">
+                    <span className="text-sm font-bold">Cart ({lines.length})</span>
+                    <button onClick={()=>setCartOpen(false)} className="text-gray-400 text-lg">×</button>
+                  </div>
+                  <div className="divide-y">
+                    {lines.map((l,i)=>(
+                      <div key={i} className="p-3">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="font-medium text-xs">{l.name}</span>
+                          <button onClick={()=>setLines(lines.filter((_,j)=>j!==i))} className="text-red-400 text-sm">×</button>
+                        </div>
+                        <div className="grid grid-cols-3 gap-1.5">
+                          <div><label className="text-[9px] text-gray-400 uppercase">Qty</label><input type="number" min="0" step={qtyStep(l.unit)} className="w-full text-center border rounded px-1 py-1 text-xs" value={l.qty} onChange={e=>{const n=[...lines];n[i]={...n[i],qty:sanitizeQty(+e.target.value,l.unit)};setLines(n);}}/></div>
+                          <div><label className="text-[9px] text-gray-400 uppercase">Unit</label><select className="w-full border rounded px-1 py-1 text-[10px]" value={l.unit} onChange={e=>{const n=[...lines];const u=e.target.value;n[i]={...n[i],unit:u,qty:sanitizeQty(n[i].qty,u)};setLines(n);}}>{UNITS.map(u=><option key={u} value={u}>{u}</option>)}</select></div>
+                          <div><label className="text-[9px] text-gray-400 uppercase">Delivery</label><input type="date" className="w-full border rounded px-1 py-1 text-[10px]" value={l.delDate} onChange={e=>{const n=[...lines];n[i]={...n[i],delDate:e.target.value};setLines(n);}}/></div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="p-3 border-t flex gap-2 sticky bottom-0 bg-white">
+                    <Btn v="secondary" s onClick={()=>{setLines([]);setCartOpen(false);}}>Clear</Btn>
+                    <Btn s onClick={submit} className="flex-1">Place Order ({lines.length})</Btn>
+                  </div>
+                </div>
               </div>
             )}
           </div>
-          <div className="flex flex-wrap gap-2 mb-2">
-            {catNames.map(cat=>(
-              <button key={cat} onClick={()=>setActiveCat(activeCat===cat?"":cat)} className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all ${activeCat===cat?"bg-orange-500 text-white shadow-sm":"bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>
-                {cat}<span className="ml-1 opacity-60">({categories[cat].length})</span>
-              </button>
-            ))}
-          </div>
-          {activeCat && categories[activeCat] && (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-1.5 mt-2 max-h-44 overflow-y-auto border rounded-lg p-2 bg-gray-50">
-              {categories[activeCat].map(item=>{
-                const added = lines.find(l=>l.iid===item.id);
-                return (<button key={item.id} onClick={()=>add(item)} className={`text-left px-3 py-2 rounded-lg text-xs border transition-all ${added?"bg-green-50 border-green-200 text-green-700":"bg-white border-gray-200 hover:border-orange-300 hover:bg-orange-50 text-gray-700"}`}>
-                  <span className="font-medium">{item.name}</span><span className="text-gray-400 ml-1">({item.unit})</span>{added && <span className="text-green-500 ml-1 font-bold">✓</span>}
-                </button>);
-              })}
-            </div>
-          )}
-        </div>
+        )}
 
-        {lines.length === 0 && <div className="bg-white rounded-xl border p-6 text-center text-gray-400 text-sm">No items selected — pick from above</div>}
-
-        {lines.length > 0 && (
-          <div className="bg-white rounded-xl border">
-            <div className="divide-y">
-              {lines.map((l,i)=>(
-                <div key={i} className="p-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="font-semibold text-sm text-gray-800">{l.name}</span>
-                    <button onClick={()=>setLines(lines.filter((_,j)=>j!==i))} className="text-red-400 hover:text-red-600 text-lg leading-none">×</button>
+        {/* My Orders view */}
+        {view==="my" && (
+          <div className="space-y-3">
+            {myOrders.length===0?<div className="bg-white rounded-xl border p-6 text-center text-gray-400 text-sm">No orders yet — switch to "New Order" to start</div>:(
+              myOrders.map(o=>(
+                <div key={o.id} className="bg-white rounded-xl border p-4">
+                  <div className="flex items-center gap-2 mb-2 flex-wrap">
+                    <span className="font-bold text-sm">{o.num}</span>
+                    <Badge t={PO_STATUSES[o.status]} c={sc(o.status)}/>
+                    <span className="text-xs text-gray-500">{fmt(o.date)}</span>
+                    <span className="text-xs text-gray-400">({o.lines.length} items)</span>
+                    <div className="flex-1"/>
+                    {o.status==="draft"&&(
+                      <div className="flex gap-2">
+                        <Btn v="outline" s onClick={()=>setModal({type:"editPO",data:o})}>Edit</Btn>
+                        <Btn v="danger" s onClick={async()=>{if(!confirm("Delete this draft?"))return;setOrders(p=>p.filter(x=>x.id!==o.id));try{await db.deleteDraftPO(o.id);notify("Draft deleted");}catch(e){notify("Delete failed",false);}}}>Delete</Btn>
+                      </div>
+                    )}
                   </div>
-                  <div className="grid grid-cols-3 gap-2 mb-2">
-                    <div>
-                      <label className="text-[10px] text-gray-400 uppercase">Qty</label>
-                      <input type="number" min="0" step={qtyStep(l.unit)} className="w-full text-center border rounded px-2 py-1.5 text-sm" value={l.qty} onChange={e=>{const n=[...lines];n[i]={...n[i],qty:sanitizeQty(+e.target.value,l.unit)};setLines(n);}}/>
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-gray-400 uppercase">Unit</label>
-                      <select className="w-full border rounded px-1 py-1.5 text-xs" value={l.unit} onChange={e=>{const n=[...lines];const u=e.target.value;n[i]={...n[i],unit:u,qty:sanitizeQty(n[i].qty,u)};setLines(n);}}>{UNITS.map(u=><option key={u} value={u}>{u}</option>)}</select>
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-gray-400 uppercase">Delivery</label>
-                      <input type="date" className="w-full border rounded px-1 py-1.5 text-xs" value={l.delDate} onChange={e=>{const n=[...lines];n[i]={...n[i],delDate:e.target.value};setLines(n);}}/>
-                    </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead className="bg-gray-50"><tr><th className="text-left px-2 py-1">Item</th><th className="px-2 py-1">Qty</th><th className="px-2 py-1">Unit</th><th className="hidden sm:table-cell px-2 py-1">Delivery</th><th className="hidden md:table-cell px-2 py-1">Notes</th></tr></thead>
+                      <tbody>{o.lines.map((l,i)=><tr key={i} className="border-t"><td className="px-2 py-1 font-medium">{l.name}</td><td className="px-2 py-1 text-center">{l.qty}</td><td className="px-2 py-1 text-center">{l.unit}</td><td className="hidden sm:table-cell px-2 py-1 text-gray-500">{fmt(l.delDate)}</td><td className="hidden md:table-cell px-2 py-1 text-gray-400">{l.notes||"—"}</td></tr>)}</tbody>
+                    </table>
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-[10px] text-gray-400 uppercase">Vendor</label>
-                      <select className="w-full border rounded px-1 py-1.5 text-xs" value={l.vid} onChange={e=>{const n=[...lines];n[i]={...n[i],vid:e.target.value,vname:vendors.find(v=>v.id===e.target.value)?.name||""};setLines(n);}}><option value="">Select vendor...</option>{vendors.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select>
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-gray-400 uppercase">Notes</label>
-                      <input type="text" className="w-full border rounded px-2 py-1.5 text-xs" placeholder="Optional" value={l.notes} onChange={e=>{const n=[...lines];n[i]={...n[i],notes:e.target.value};setLines(n);}}/>
-                    </div>
-                  </div>
+                  {o.status!=="draft"&&o.vid&&<div className="mt-2 text-xs text-gray-500">Vendor: {vM[o.vid]?.name||"Assigned"}</div>}
                 </div>
-              ))}
-            </div>
-            {(() => {
-              const vG={}; lines.forEach(l=>{const vid=l.vid||"unknown";const vn=l.vname||"No vendor";if(!vG[vid])vG[vid]={name:vn,count:0};vG[vid].count++;});
-              const gs=Object.values(vG);
-              return gs.length>1?<div className="px-3 py-2 bg-orange-50 text-xs text-orange-700 border-t">Will create {gs.length} separate POs: {gs.map(g=>`${g.name} (${g.count} items)`).join(", ")}</div>:null;
-            })()}
+              ))
+            )}
           </div>
         )}
-        <div className="flex justify-end gap-2">
-          {lines.length>0 && <Btn v="secondary" onClick={()=>setLines([])}>Clear</Btn>}
-          <Btn disabled={lines.length===0} onClick={submit}>✓ Place Order</Btn>
-        </div>
       </div>
     );
   };
@@ -1381,20 +1480,46 @@ export default function App() {
   const MgrDash = () => {
     const [dateFrom, setDateFrom] = useState(""); const [dateTo, setDateTo] = useState(""); const [period, setPeriod] = useState("");
     const fOrders = orders.filter(o=>{if(dateFrom&&o.date<dateFrom)return false;if(dateTo&&o.date>dateTo)return false;return true;});
+    const fDirectOrders = directOrders.filter(d=>{if(dateFrom&&d.date<dateFrom)return false;if(dateTo&&d.date>dateTo)return false;return true;});
+    const fInvoices = invoices.filter(i=>{if(dateFrom&&i.date<dateFrom)return false;if(dateTo&&i.date>dateTo)return false;return true;});
     const draftC = fOrders.filter(o=>o.status==="draft").length;
     const sentC = fOrders.filter(o=>o.status==="sent_to_vendor").length;
     const completedC = fOrders.filter(o=>o.status==="grn_done").length;
-    const spendV = vendors.map(v=>({name:v.name.split(" ").slice(0,2).join(" "),amt:invoices.filter(i=>i.vid===v.id).reduce((s,i)=>s+i.totalGST,0)})).filter(d=>d.amt>0).sort((a,b)=>b.amt-a.amt);
-    const spendCat = useMemo(()=>{const m={};invoices.forEach(i=>{const c=vM[i.vid]?.category||"Other";m[c]=(m[c]||0)+i.totalGST;});return Object.entries(m).map(([name,value])=>({name,value}));},[invoices]);
+    const poSpend = fInvoices.reduce((s,i)=>s+i.totalGST,0);
+    const doSpend = fDirectOrders.reduce((s,d)=>s+d.total,0);
+    const totalSpend = poSpend + doSpend;
+
+    const spendV = vendors.map(v=>{
+      const invAmt=fInvoices.filter(i=>i.vid===v.id).reduce((s,i)=>s+i.totalGST,0);
+      const doAmt=fDirectOrders.filter(d=>d.vid===v.id).reduce((s,d)=>s+d.total,0);
+      return {name:v.name.split(" ").slice(0,2).join(" "),amt:invAmt+doAmt};
+    }).filter(d=>d.amt>0).sort((a,b)=>b.amt-a.amt);
+
+    // Category-wise spend from invoice lines + direct order lines
+    const spendCat = useMemo(()=>{
+      const m={};
+      fInvoices.forEach(inv=>{inv.lines?.forEach(l=>{const cat=iM[l.iid]?.category||"Other";m[cat]=(m[cat]||0)+l.lineBase;});});
+      fDirectOrders.forEach(d=>{d.lines?.forEach(l=>{const cat=l.category||d.category||"Other";m[cat]=(m[cat]||0)+l.lineTotal;});});
+      return Object.entries(m).map(([name,value])=>({name,value})).sort((a,b)=>b.value-a.value);
+    },[fInvoices,fDirectOrders,iM]);
+
+    // Monthly comparison
+    const monthlySpend = useMemo(()=>{
+      const m={};
+      invoices.forEach(inv=>{const mo=inv.date?.slice(0,7);if(!mo)return;if(!m[mo])m[mo]={month:mo,po:0,direct:0};m[mo].po+=inv.totalGST;});
+      directOrders.forEach(d=>{const mo=d.date?.slice(0,7);if(!mo)return;if(!m[mo])m[mo]={month:mo,po:0,direct:0};m[mo].direct+=d.total;});
+      return Object.values(m).sort((a,b)=>a.month.localeCompare(b.month)).slice(-6);
+    },[invoices,directOrders]);
 
     return (
       <div className="space-y-4">
         <FilterBar {...{dateFrom,dateTo,setDateFrom,setDateTo,period,setPeriod}}/>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
           <Stat label="Total POs" value={fOrders.length}/>
           <Stat label="Draft" value={draftC} accent="yellow"/>
-          <Stat label="Sent to Vendor" value={sentC} accent="blue"/>
+          <Stat label="Sent" value={sentC} accent="blue"/>
           <Stat label="Completed" value={completedC} accent="green"/>
+          <Stat label="Total Spend" value={R(totalSpend)} sub={`PO: ${R(poSpend)} | Direct: ${R(doSpend)}`}/>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="bg-white rounded-xl border p-4">
@@ -1414,6 +1539,14 @@ export default function App() {
             )}
           </div>
         </div>
+        {monthlySpend.length>0&&(
+          <div className="bg-white rounded-xl border p-4">
+            <p className="text-xs font-semibold text-gray-500 uppercase mb-3">Monthly Spend Comparison</p>
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={monthlySpend}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="month" tick={{fontSize:10}}/><YAxis tickFormatter={v=>`₹${v}`} tick={{fontSize:10}}/><Tooltip formatter={v=>R(v)}/><Bar dataKey="po" name="PO-based" fill="#f97316" radius={[4,4,0,0]}/><Bar dataKey="direct" name="Direct" fill="#3b82f6" radius={[4,4,0,0]}/></BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
       </div>
     );
   };
@@ -2168,14 +2301,658 @@ export default function App() {
   };
 
   // ═════════════════════════════════════════
+  // MANAGER: DIRECT ORDERS
+  // ═════════════════════════════════════════
+  const DirectOrders = () => {
+    const [view, setView] = useState("list"); // list | new
+    const [fCat, setFCat] = useState("");
+    const [fPaid, setFPaid] = useState("");
+    const [dateFrom, setDateFrom] = useState(""); const [dateTo, setDateTo] = useState(""); const [period, setPeriod] = useState("");
+    const shown = directOrders.filter(d=>{if(fCat&&d.category!==fCat)return false;if(fPaid&&d.paidStatus!==fPaid)return false;if(dateFrom&&d.date<dateFrom)return false;if(dateTo&&d.date>dateTo)return false;return true;});
+
+    // New order form state
+    const [doLines, setDoLines] = useState([]);
+    const [doSearch, setDoSearch] = useState("");
+    const [doVid, setDoVid] = useState(""); const [doVname, setDoVname] = useState("");
+    const [doInvNum, setDoInvNum] = useState(""); const [doDate, setDoDate] = useState(td());
+    const [doCat, setDoCat] = useState(""); const [doPaid, setDoPaid] = useState("unpaid");
+    const [doPayMethod, setDoPayMethod] = useState(""); const [doPayRef, setDoPayRef] = useState("");
+    const [doNotes, setDoNotes] = useState("");
+    const [newItemMode, setNewItemMode] = useState(false);
+    const [ni, setNi] = useState({name:"",unit:"piece",category:"",hsn:"",gst:0});
+
+    const allCats = useMemo(()=>{const s=new Set([...items.map(i=>i.category).filter(Boolean),...DIRECT_CATEGORIES]);return [...s].sort();},[items]);
+    const doResults = doSearch.length>=1 ? items.filter(i=>i.name.toLowerCase().includes(doSearch.toLowerCase())).slice(0,6) : [];
+
+    const addDoLine = (item) => {
+      if(doLines.find(l=>l.iid===item.id)) return;
+      setDoLines(p=>[...p,{iid:item.id,name:item.name,qty:1,unit:item.unit,price:0,lineTotal:0,category:item.category||doCat,gst:item.gst||0,hsn:item.hsn||""}]);
+      setDoSearch("");
+    };
+
+    const createNewItem = async () => {
+      if(!ni.name.trim())return;
+      const newItem = {id:uid(),name:ni.name.trim(),unit:ni.unit,category:ni.category,hsn:ni.hsn,gst:ni.gst,vid:""};
+      setItems(p=>[...p,newItem]);
+      try{const saved=await db.upsertItem(newItem);if(saved.id!==newItem.id)setItems(p=>p.map(i=>i.id===newItem.id?{...i,id:saved.id}:i));newItem.id=saved.id;}catch(e){console.error("[novy]",e.message);}
+      addDoLine(newItem);
+      setNewItemMode(false);setNi({name:"",unit:"piece",category:"",hsn:"",gst:0});
+    };
+
+    const submitDO = async () => {
+      if(doLines.length===0){notify("Add at least one item",false);return;}
+      const total = doLines.reduce((s,l)=>s+l.lineTotal,0);
+      const gstAmt = doLines.reduce((s,l)=>s+l.lineTotal*(l.gst/100),0);
+      const num = genNum("DO", doDate, directOrders);
+      const newDO = {id:uid(),num,vid:doVid,vname:doVname,invNum:doInvNum,date:doDate,category:doCat,total:total+gstAmt,gst:gstAmt,paidStatus:doPaid,payMethod:doPayMethod,payDate:doPaid==="paid"?doDate:"",payRef:doPayRef,notes:doNotes,by:user.name,lines:doLines};
+      setDirectOrders(p=>[newDO,...p]);
+      try{const saved=await db.createDirectOrder(newDO);if(saved.id!==newDO.id)setDirectOrders(p=>p.map(d=>d.id===newDO.id?{...d,id:saved.id,num:saved.num}:d));notify("Direct order saved");}catch(e){notify("Save failed: "+e.message,false);}
+      // If paid, also create invoice+payment for payables tracking
+      if(doPaid==="paid"&&doVid){
+        try{
+          const invNum=genNum("INV",doDate,invoices);
+          const v=vM[doVid];
+          const invLines=doLines.map(l=>({iid:l.iid,name:l.name,qty:l.qty,unit:l.unit,price:l.price,gst:l.gst,hsn:l.hsn,lineBase:l.lineTotal}));
+          const gstD=calcGST(total,doLines[0]?.gst||0,v?.intra!==false);
+          const inv={id:uid(),num:invNum,grnId:"",grnNum:"",poNum:num,vid:doVid,vname:doVname,vgstin:v?.gstin||"",vendorInvNum:doInvNum,intra:v?.intra!==false,date:doDate,due:doDate,base:total,cgst:gstD.cgst,sgst:gstD.sgst,igst:gstD.igst,totalGST:total+gstAmt,createdBy:user.name,lines:invLines};
+          const savedInv=await db.createInvoice(inv);
+          setInvoices(p=>[{...inv,id:savedInv.id,num:savedInv.num},...p]);
+          const pay={id:uid(),invId:savedInv.id,vid:doVid,amount:total+gstAmt,date:doDate,method:doPayMethod,ref:doPayRef,by:user.name};
+          const savedPay=await db.createPayment(pay);
+          setPayments(p=>[{...pay,id:savedPay.id},...p]);
+        }catch(e){console.error("[novy] DO invoice/payment:",e.message);}
+      }
+      // Reset form
+      setDoLines([]);setDoVid("");setDoVname("");setDoInvNum("");setDoDate(td());setDoCat("");setDoPaid("unpaid");setDoPayMethod("");setDoPayRef("");setDoNotes("");setView("list");
+    };
+
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3 flex-wrap">
+          <p className="text-sm font-semibold text-gray-700">Direct Orders ({shown.length})</p>
+          {view==="list"&&<><FilterBar {...{dateFrom,dateTo,setDateFrom,setDateTo,period,setPeriod}}/>
+          <select className="border rounded-lg px-2 py-1.5 text-xs" value={fCat} onChange={e=>setFCat(e.target.value)}><option value="">All categories</option>{allCats.map(c=><option key={c} value={c}>{c}</option>)}</select>
+          <select className="border rounded-lg px-2 py-1.5 text-xs" value={fPaid} onChange={e=>setFPaid(e.target.value)}><option value="">All statuses</option><option value="paid">Paid</option><option value="unpaid">Unpaid</option><option value="partial">Partial</option></select></>}
+          <div className="flex-1"/>
+          {view==="list"?<Btn s onClick={()=>setView("new")}>+ New Direct Order</Btn>:<Btn v="outline" s onClick={()=>setView("list")}>← Back to List</Btn>}
+        </div>
+
+        {view==="list"&&(
+          shown.length===0?<div className="bg-white rounded-xl border p-6 text-center text-gray-400 text-sm">No direct orders yet</div>:(
+            <div className="bg-white rounded-xl border overflow-x-auto">
+              <table className="w-full text-xs min-w-[700px]">
+                <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">Order #</th><th className="text-left px-3 py-2">Date</th><th className="text-left px-3 py-2">Vendor</th><th className="text-left px-3 py-2">Category</th><th className="text-left px-3 py-2">Invoice</th><th className="text-right px-3 py-2">Total</th><th className="px-3 py-2">Status</th></tr></thead>
+                <tbody>{shown.map(d=>(
+                  <tr key={d.id} className="border-t hover:bg-gray-50">
+                    <td className="px-3 py-2 font-medium">{d.num}</td>
+                    <td className="px-3 py-2 text-gray-500">{fmt(d.date)}</td>
+                    <td className="px-3 py-2">{d.vname||"—"}</td>
+                    <td className="px-3 py-2 text-gray-500">{d.category||"—"}</td>
+                    <td className="px-3 py-2 text-gray-400">{d.invNum||"—"}</td>
+                    <td className="px-3 py-2 text-right font-bold">{R(d.total)}</td>
+                    <td className="px-3 py-2 text-center"><Badge t={d.paidStatus} c={d.paidStatus==="paid"?"green":d.paidStatus==="partial"?"yellow":"red"}/></td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          )
+        )}
+
+        {view==="new"&&(
+          <div className="bg-white rounded-xl border p-4 space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div><label className="text-[10px] text-gray-400 uppercase">Date</label><input type="date" className="w-full border rounded px-2 py-1.5 text-sm" value={doDate} onChange={e=>setDoDate(e.target.value)}/></div>
+              <div><label className="text-[10px] text-gray-400 uppercase">Category</label><select className="w-full border rounded px-2 py-1.5 text-sm" value={doCat} onChange={e=>setDoCat(e.target.value)}><option value="">Select...</option>{allCats.map(c=><option key={c} value={c}>{c}</option>)}</select></div>
+              <div><label className="text-[10px] text-gray-400 uppercase">Vendor</label><select className="w-full border rounded px-2 py-1.5 text-sm" value={doVid} onChange={e=>{setDoVid(e.target.value);setDoVname(vendors.find(v=>v.id===e.target.value)?.name||"");}}><option value="">Select vendor...</option>{vendors.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div><label className="text-[10px] text-gray-400 uppercase">Invoice #</label><input type="text" className="w-full border rounded px-2 py-1.5 text-sm" value={doInvNum} onChange={e=>setDoInvNum(e.target.value)}/></div>
+              <div><label className="text-[10px] text-gray-400 uppercase">Payment Status</label><select className="w-full border rounded px-2 py-1.5 text-sm" value={doPaid} onChange={e=>setDoPaid(e.target.value)}><option value="unpaid">Unpaid</option><option value="paid">Paid</option><option value="partial">Partial</option></select></div>
+              {doPaid!=="unpaid"&&<div><label className="text-[10px] text-gray-400 uppercase">Payment Method</label><select className="w-full border rounded px-2 py-1.5 text-sm" value={doPayMethod} onChange={e=>setDoPayMethod(e.target.value)}><option value="">Select...</option><option>UPI</option><option>NEFT</option><option>Cheque</option><option>Cash</option><option>Card</option></select></div>}
+            </div>
+            {doPaid!=="unpaid"&&<div className="grid grid-cols-1 sm:grid-cols-2 gap-3"><div><label className="text-[10px] text-gray-400 uppercase">Payment Reference</label><input type="text" className="w-full border rounded px-2 py-1.5 text-sm" value={doPayRef} onChange={e=>setDoPayRef(e.target.value)}/></div></div>}
+
+            {/* Item search */}
+            <div>
+              <label className="text-[10px] text-gray-400 uppercase">Add Items</label>
+              <div className="relative">
+                <input type="text" placeholder="Search items or type new..." className="w-full border rounded-lg px-3 py-2 text-sm" value={doSearch} onChange={e=>setDoSearch(e.target.value)}/>
+                {doSearch.length>=1&&(
+                  <div className="absolute z-20 w-full mt-1 bg-white border rounded-xl shadow-lg max-h-48 overflow-y-auto">
+                    {doResults.map(item=>(
+                      <button key={item.id} onClick={()=>addDoLine(item)} className="w-full text-left px-4 py-2 flex items-center gap-3 border-b last:border-0 text-sm hover:bg-orange-50">
+                        <span className="font-medium flex-1">{item.name}</span><span className="text-gray-400 text-xs">{item.category}</span><span className="text-orange-400 text-xs">+</span>
+                      </button>
+                    ))}
+                    <button onClick={()=>{setNewItemMode(true);setNi(p=>({...p,name:doSearch}));setDoSearch("");}} className="w-full text-left px-4 py-2 text-sm text-orange-600 font-medium hover:bg-orange-50 border-t">+ Create new item "{doSearch}"</button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* New item form */}
+            {newItemMode&&(
+              <div className="bg-orange-50 border border-orange-200 rounded-lg p-3 space-y-2">
+                <p className="text-xs font-semibold text-orange-700">Create New Item</p>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <div><label className="text-[9px] text-gray-400 uppercase">Name</label><input className="w-full border rounded px-2 py-1 text-xs" value={ni.name} onChange={e=>setNi(p=>({...p,name:e.target.value}))}/></div>
+                  <div><label className="text-[9px] text-gray-400 uppercase">Unit</label><select className="w-full border rounded px-1 py-1 text-xs" value={ni.unit} onChange={e=>setNi(p=>({...p,unit:e.target.value}))}>{UNITS.map(u=><option key={u}>{u}</option>)}</select></div>
+                  <div><label className="text-[9px] text-gray-400 uppercase">Category</label><select className="w-full border rounded px-1 py-1 text-xs" value={ni.category} onChange={e=>setNi(p=>({...p,category:e.target.value}))}><option value="">Select...</option>{allCats.map(c=><option key={c}>{c}</option>)}</select></div>
+                  <div><label className="text-[9px] text-gray-400 uppercase">GST %</label><select className="w-full border rounded px-1 py-1 text-xs" value={ni.gst} onChange={e=>setNi(p=>({...p,gst:+e.target.value}))}>{GST_RATES.map(r=><option key={r} value={r}>{r}%</option>)}</select></div>
+                </div>
+                <div className="flex gap-2"><Btn s onClick={createNewItem}>Add Item</Btn><Btn v="outline" s onClick={()=>setNewItemMode(false)}>Cancel</Btn></div>
+              </div>
+            )}
+
+            {/* Lines table */}
+            {doLines.length>0&&(
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-50"><tr><th className="text-left px-2 py-1">Item</th><th className="px-2 py-1 w-20">Qty</th><th className="px-2 py-1 w-20">Unit</th><th className="px-2 py-1 w-24">Unit Price</th><th className="px-2 py-1 w-24 text-right">Total</th><th className="px-2 py-1 w-8"></th></tr></thead>
+                  <tbody>{doLines.map((l,i)=>(
+                    <tr key={i} className="border-t">
+                      <td className="px-2 py-1 font-medium">{l.name}</td>
+                      <td className="px-2 py-1"><input type="number" min="0" step={qtyStep(l.unit)} className="w-full text-center border rounded px-1 py-1 text-xs" value={l.qty} onChange={e=>{const n=[...doLines];n[i]={...n[i],qty:sanitizeQty(+e.target.value,l.unit),lineTotal:sanitizeQty(+e.target.value,l.unit)*n[i].price};setDoLines(n);}}/></td>
+                      <td className="px-2 py-1"><select className="w-full border rounded px-1 py-1 text-xs" value={l.unit} onChange={e=>{const n=[...doLines];n[i]={...n[i],unit:e.target.value};setDoLines(n);}}>{UNITS.map(u=><option key={u}>{u}</option>)}</select></td>
+                      <td className="px-2 py-1"><input type="number" min="0" step="0.01" className="w-full text-right border rounded px-1 py-1 text-xs" value={l.price} onChange={e=>{const n=[...doLines];n[i]={...n[i],price:+e.target.value,lineTotal:n[i].qty*(+e.target.value)};setDoLines(n);}}/></td>
+                      <td className="px-2 py-1 text-right font-medium">{R(l.lineTotal)}</td>
+                      <td className="px-2 py-1"><button onClick={()=>setDoLines(doLines.filter((_,j)=>j!==i))} className="text-red-400 hover:text-red-600">×</button></td>
+                    </tr>
+                  ))}</tbody>
+                  <tfoot><tr className="border-t bg-gray-50"><td colSpan="4" className="px-2 py-1 text-right font-bold">Subtotal</td><td className="px-2 py-1 text-right font-bold">{R(doLines.reduce((s,l)=>s+l.lineTotal,0))}</td><td/></tr></tfoot>
+                </table>
+              </div>
+            )}
+
+            <div><label className="text-[10px] text-gray-400 uppercase">Notes</label><input type="text" className="w-full border rounded px-2 py-1.5 text-sm" placeholder="Optional notes" value={doNotes} onChange={e=>setDoNotes(e.target.value)}/></div>
+            <div className="flex justify-end gap-2">
+              <Btn v="outline" onClick={()=>setView("list")}>Cancel</Btn>
+              <Btn onClick={submitDO}>Save Direct Order</Btn>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ═════════════════════════════════════════
+  // STAFF: DRY STORE REQUISITION
+  // ═════════════════════════════════════════
+  const StaffDryStore = () => {
+    const [view, setView] = useState("log"); // "log" or "my"
+    const [search, setSearch] = useState("");
+    const [lines, setLines] = useState([]);
+    const [reqDate, setReqDate] = useState(td());
+    const [reqNotes, setReqNotes] = useState("");
+
+    const dryItems = useMemo(()=>items.filter(i=>DRY_STORE_CATS.has(i.category)),[items]);
+    const dryCategories = useMemo(()=>{const m={};dryItems.forEach(i=>{const c=i.category||"Other";if(!m[c])m[c]=[];m[c].push(i);});return m;},[dryItems]);
+    const [activeCat,setActiveCat]=useState("");
+    const results = search.length>=1 ? dryItems.filter(i=>i.name.toLowerCase().includes(search.toLowerCase())).slice(0,8) : [];
+
+    const myReqs = useMemo(()=>requisitions.filter(r=>r.staffName===user.name&&r.status==="active").sort((a,b)=>(b.date||"").localeCompare(a.date||"")),[requisitions,user.name]);
+
+    const addLine = (item) => {
+      if(lines.find(l=>l.iid===item.id))return;
+      setLines(p=>[...p,{iid:item.id,name:item.name,unit:item.unit,qty:1}]);
+    };
+
+    const submitReq = async () => {
+      if(lines.length===0)return;
+      const req = {id:uid(),staffId:user.id,staffName:user.name,date:reqDate,status:"active",notes:reqNotes,lines};
+      setRequisitions(p=>[req,...p]);
+      try{const saved=await db.createRequisition(req);if(saved.id!==req.id)setRequisitions(p=>p.map(r=>r.id===req.id?{...r,id:saved.id}:r));notify("Requisition saved");}catch(e){notify("Save failed",false);}
+      setLines([]);setReqNotes("");
+    };
+
+    const editReq = (req) => {
+      setLines(req.lines.map(l=>({...l})));
+      setReqDate(req.date);
+      setReqNotes(req.notes);
+      setView("log");
+      // Delete old and recreate (with audit trail)
+      (async()=>{
+        for(const l of req.lines){
+          await db.createRequisitionEdit({reqId:req.id,lineId:l.id,field:"all",oldVal:JSON.stringify(l),newVal:"editing",action:"edit",by:user.name}).catch(()=>{});
+        }
+        setRequisitions(p=>p.filter(r=>r.id!==req.id));
+        try{await db.softDeleteRequisition(req.id);}catch(e){}
+      })();
+    };
+
+    const deleteReq = async (req) => {
+      if(!confirm("Delete this requisition?"))return;
+      await db.createRequisitionEdit({reqId:req.id,lineId:"",field:"requisition",oldVal:JSON.stringify(req.lines),newVal:"deleted",action:"delete",by:user.name}).catch(()=>{});
+      setRequisitions(p=>p.map(r=>r.id===req.id?{...r,status:"deleted"}:r));
+      try{await db.softDeleteRequisition(req.id);notify("Requisition deleted");}catch(e){notify("Delete failed",false);}
+    };
+
+    return (
+      <div className="space-y-4">
+        <div className="flex gap-1 bg-gray-100 p-1 rounded-lg w-fit">
+          <button onClick={()=>setView("log")} className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-all ${view==="log"?"bg-white shadow text-orange-600":"text-gray-500"}`}>Log Issuance</button>
+          <button onClick={()=>setView("my")} className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-all ${view==="my"?"bg-white shadow text-orange-600":"text-gray-500"}`}>My Requisitions{myReqs.length>0&&<span className="ml-1 px-1.5 py-0.5 text-[10px] rounded-full bg-orange-100 text-orange-700">{myReqs.length}</span>}</button>
+        </div>
+
+        {view==="log"&&(
+          <div className="space-y-4">
+            <div className="bg-white rounded-xl border p-4">
+              <div className="flex items-center gap-3 mb-3">
+                <label className="text-[10px] text-gray-400 uppercase">Date</label>
+                <input type="date" className="border rounded px-2 py-1 text-xs" value={reqDate} onChange={e=>setReqDate(e.target.value)}/>
+              </div>
+              <div className="relative mb-3">
+                <input type="text" placeholder="Search dry store items..." className="w-full border rounded-lg px-3 py-2 text-sm" value={search} onChange={e=>setSearch(e.target.value)}/>
+                {results.length>0&&(
+                  <div className="absolute z-20 w-full mt-1 bg-white border rounded-xl shadow-lg max-h-48 overflow-y-auto">
+                    {results.map(item=>{
+                      const added = lines.find(l=>l.iid===item.id);
+                      return (<button key={item.id} onClick={()=>{if(!added)addLine(item);setSearch("");}} className={`w-full text-left px-4 py-2 flex items-center gap-3 border-b last:border-0 text-sm ${added?"bg-green-50":"hover:bg-orange-50"}`}>
+                        <span className="font-medium flex-1">{item.name}</span><span className="text-gray-400 text-xs">{item.unit}</span>{added?<span className="text-green-500 text-xs">✓</span>:<span className="text-orange-400 text-xs">+</span>}
+                      </button>);
+                    })}
+                  </div>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-2 mb-2">
+                {Object.keys(dryCategories).map(cat=>(
+                  <button key={cat} onClick={()=>setActiveCat(activeCat===cat?"":cat)} className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${activeCat===cat?"bg-orange-500 text-white":"bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>
+                    {cat}<span className="ml-1 opacity-60">({dryCategories[cat].length})</span>
+                  </button>
+                ))}
+              </div>
+              {activeCat&&dryCategories[activeCat]&&(
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-1.5 mt-2 max-h-44 overflow-y-auto border rounded-lg p-2 bg-gray-50">
+                  {dryCategories[activeCat].map(item=>{
+                    const added=lines.find(l=>l.iid===item.id);
+                    return (<button key={item.id} onClick={()=>addLine(item)} className={`text-left px-3 py-2 rounded-lg text-xs border transition-all ${added?"bg-green-50 border-green-200":"bg-white border-gray-200 hover:border-orange-300 hover:bg-orange-50"}`}>
+                      {item.name}<span className="text-gray-400 ml-1">({item.unit})</span>{added&&<span className="text-green-500 ml-1">✓</span>}
+                    </button>);
+                  })}
+                </div>
+              )}
+            </div>
+
+            {lines.length>0&&(
+              <div className="bg-white rounded-xl border p-4">
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-50"><tr><th className="text-left px-2 py-1">Item</th><th className="px-2 py-1 w-24">Qty</th><th className="px-2 py-1 w-20">Unit</th><th className="px-2 py-1 w-8"></th></tr></thead>
+                  <tbody>{lines.map((l,i)=>(
+                    <tr key={i} className="border-t">
+                      <td className="px-2 py-1 font-medium">{l.name}</td>
+                      <td className="px-2 py-1"><input type="number" min="0" step={qtyStep(l.unit)} className="w-full text-center border rounded px-1 py-1 text-xs" value={l.qty} onChange={e=>{const n=[...lines];n[i]={...n[i],qty:sanitizeQty(+e.target.value,l.unit)};setLines(n);}}/></td>
+                      <td className="px-2 py-1 text-center text-gray-500">{l.unit}</td>
+                      <td className="px-2 py-1"><button onClick={()=>setLines(lines.filter((_,j)=>j!==i))} className="text-red-400 hover:text-red-600">×</button></td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+                <div className="mt-2"><input type="text" className="w-full border rounded px-2 py-1 text-xs" placeholder="Notes (optional)" value={reqNotes} onChange={e=>setReqNotes(e.target.value)}/></div>
+                <div className="flex justify-end gap-2 mt-3">
+                  <Btn v="secondary" s onClick={()=>setLines([])}>Clear</Btn>
+                  <Btn s onClick={submitReq}>Submit Requisition ({lines.length})</Btn>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {view==="my"&&(
+          <div className="space-y-3">
+            {myReqs.length===0?<div className="bg-white rounded-xl border p-6 text-center text-gray-400 text-sm">No requisitions yet</div>:(
+              myReqs.map(r=>(
+                <div key={r.id} className="bg-white rounded-xl border p-4">
+                  <div className="flex items-center gap-2 mb-2 flex-wrap">
+                    <span className="text-sm font-bold">{fmt(r.date)}</span>
+                    <span className="text-xs text-gray-400">{r.lines.length} items</span>
+                    {r.notes&&<span className="text-xs text-gray-500 italic">— {r.notes}</span>}
+                    <div className="flex-1"/>
+                    <Btn v="outline" s onClick={()=>editReq(r)}>Edit</Btn>
+                    <Btn v="danger" s onClick={()=>deleteReq(r)}>Delete</Btn>
+                  </div>
+                  <table className="w-full text-xs"><thead className="bg-gray-50"><tr><th className="text-left px-2 py-1">Item</th><th className="px-2 py-1">Qty</th><th className="px-2 py-1">Unit</th></tr></thead>
+                    <tbody>{r.lines.map((l,i)=><tr key={i} className="border-t"><td className="px-2 py-1">{l.name}</td><td className="px-2 py-1 text-center">{l.qty}</td><td className="px-2 py-1 text-center">{l.unit}</td></tr>)}</tbody>
+                  </table>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ═════════════════════════════════════════
+  // MANAGER: DRY STORE MANAGEMENT
+  // ═════════════════════════════════════════
+  const MgrDryStore = () => {
+    const [selMonth, setSelMonth] = useState(td().slice(0,7)); // "2026-04"
+    const [balances, setBalances] = useState({});
+    const [reconUnlocked, setReconUnlocked] = useState(false);
+    const [reconPw, setReconPw] = useState("");
+    const [showRecon, setShowRecon] = useState(false);
+
+    const dryItems = useMemo(()=>items.filter(i=>DRY_STORE_CATS.has(i.category)).sort((a,b)=>a.name.localeCompare(b.name)),[items]);
+
+    // Load balances for selected month
+    useEffect(()=>{
+      const m={};
+      dryBalances.filter(b=>b.month===selMonth).forEach(b=>{m[b.iid]={opening:b.opening,closing:b.closing,id:b.id};});
+      // Also check prev month closing for auto-fill
+      const prevMonth = (()=>{const [y,mo]=selMonth.split("-").map(Number);const pm=mo===1?12:mo-1;const py=mo===1?y-1:y;return `${py}-${String(pm).padStart(2,"0")}`;})();
+      dryBalances.filter(b=>b.month===prevMonth).forEach(b=>{if(!m[b.iid])m[b.iid]={opening:b.closing??0,closing:null,id:""};else if(m[b.iid].opening===0&&b.closing!=null)m[b.iid].opening=b.closing;});
+      setBalances(m);
+    },[selMonth,dryBalances]);
+
+    // Compute ordered qty per item from GRNs in this month
+    const orderedMap = useMemo(()=>{
+      const m={};
+      grns.filter(g=>g.date?.slice(0,7)===selMonth).forEach(g=>{g.lines.forEach(l=>{m[l.iid]=(m[l.iid]||0)+l.qtyRec;});});
+      return m;
+    },[grns,selMonth]);
+
+    // Compute staff requisitions per item in this month
+    const reqMap = useMemo(()=>{
+      const m={};
+      requisitions.filter(r=>r.date?.slice(0,7)===selMonth&&r.status==="active").forEach(r=>{r.lines.forEach(l=>{m[l.iid]=(m[l.iid]||0)+l.qty;});});
+      return m;
+    },[requisitions,selMonth]);
+
+    const setBal = (iid, field, val) => {
+      setBalances(p=>({...p,[iid]:{...(p[iid]||{opening:0,closing:null,id:""}), [field]:val}}));
+    };
+
+    const saveAll = async () => {
+      let count=0;
+      for(const item of dryItems){
+        const b = balances[item.id];
+        if(!b) continue;
+        try{
+          await db.upsertDryStoreBalance({id:b.id||"",iid:item.id,name:item.name,month:selMonth,opening:b.opening||0,closing:b.closing,notes:""});
+          count++;
+        }catch(e){console.error("[novy] Balance save:",e.message);}
+      }
+      notify(`Saved ${count} balances`);
+      refresh(true);
+    };
+
+    const carryForward = async () => {
+      const [y,mo]=selMonth.split("-").map(Number);
+      const nm=mo===12?1:mo+1;const ny=mo===12?y+1:y;
+      const nextMonth=`${ny}-${String(nm).padStart(2,"0")}`;
+      let count=0;
+      for(const item of dryItems){
+        const b=balances[item.id];
+        if(b?.closing!=null){
+          try{await db.upsertDryStoreBalance({id:"",iid:item.id,name:item.name,month:nextMonth,opening:b.closing,closing:null,notes:""});count++;}catch(e){}
+        }
+      }
+      notify(`Carried forward ${count} items to ${nextMonth}`);
+      refresh(true);
+    };
+
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3 flex-wrap">
+          <p className="text-sm font-semibold text-gray-700">Dry Store Inventory</p>
+          <input type="month" className="border rounded-lg px-2 py-1.5 text-xs" value={selMonth} onChange={e=>setSelMonth(e.target.value)}/>
+          <div className="flex-1"/>
+          <Btn v="outline" s onClick={carryForward}>Carry Forward →</Btn>
+          <Btn s onClick={saveAll}>Save Balances</Btn>
+          <Btn v={showRecon?"primary":"outline"} s onClick={()=>{if(!reconUnlocked){const p=prompt("Enter reconciliation password:");if(p===RECON_PASSWORD){setReconUnlocked(true);setShowRecon(true);}else{notify("Wrong password",false);}}else{setShowRecon(!showRecon);}}}>{showRecon?"Hide Recon":"Reconciliation"}</Btn>
+        </div>
+
+        <div className="bg-white rounded-xl border overflow-x-auto">
+          <table className="w-full text-xs min-w-[800px]">
+            <thead className="bg-gray-50"><tr>
+              <th className="text-left px-2 py-2">Item</th>
+              <th className="px-2 py-2 w-20">Opening</th>
+              <th className="px-2 py-2 w-20">Ordered</th>
+              <th className="px-2 py-2 w-20">Closing</th>
+              <th className="px-2 py-2 w-20">Calc. Issued</th>
+              <th className="px-2 py-2 w-20">Staff Reqs</th>
+              {showRecon&&<th className="px-2 py-2 w-20">Discrepancy</th>}
+            </tr></thead>
+            <tbody>{dryItems.map(item=>{
+              const b=balances[item.id]||{opening:0,closing:null};
+              const ordered=orderedMap[item.id]||0;
+              const calcIssued = b.closing!=null ? (b.opening+ordered-b.closing) : null;
+              const staffReqs = reqMap[item.id]||0;
+              const disc = calcIssued!=null ? calcIssued-staffReqs : null;
+              return (
+                <tr key={item.id} className={`border-t ${disc!=null&&Math.abs(disc)>0.01?"bg-amber-50":""}`}>
+                  <td className="px-2 py-1.5 font-medium">{item.name}<span className="text-gray-400 ml-1 text-[10px]">({item.unit})</span></td>
+                  <td className="px-2 py-1"><input type="number" min="0" step="0.01" className="w-full text-center border rounded px-1 py-1 text-xs" value={b.opening} onChange={e=>setBal(item.id,"opening",+e.target.value)}/></td>
+                  <td className="px-2 py-1 text-center text-gray-500">{ordered||"—"}</td>
+                  <td className="px-2 py-1"><input type="number" min="0" step="0.01" className="w-full text-center border rounded px-1 py-1 text-xs" value={b.closing??"" } placeholder="—" onChange={e=>setBal(item.id,"closing",e.target.value===""?null:+e.target.value)}/></td>
+                  <td className="px-2 py-1 text-center font-medium">{calcIssued!=null?calcIssued.toFixed(2):"—"}</td>
+                  <td className="px-2 py-1 text-center">{staffReqs||"—"}</td>
+                  {showRecon&&<td className={`px-2 py-1 text-center font-bold ${disc!=null&&Math.abs(disc)>0.01?(disc>0?"text-red-600":"text-green-600"):"text-gray-400"}`}>{disc!=null?disc.toFixed(2):"—"}</td>}
+                </tr>
+              );
+            })}</tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
+
+  // ═════════════════════════════════════════
+  // STAFF: VEG & BUTCHERY LOG
+  // ═════════════════════════════════════════
+  const StaffPerishables = () => {
+    const [logDate, setLogDate] = useState(td());
+    const [search, setSearch] = useState("");
+    const [entries, setEntries] = useState([]);
+
+    const perishItems = useMemo(()=>items.filter(i=>PERISHABLE_CATS.has(i.category)),[items]);
+    const [activeCat,setActiveCat]=useState("");
+    const perishCats = useMemo(()=>{const m={};perishItems.forEach(i=>{const c=i.category||"Other";if(!m[c])m[c]=[];m[c].push(i);});return m;},[perishItems]);
+    const results = search.length>=1 ? perishItems.filter(i=>i.name.toLowerCase().includes(search.toLowerCase())).slice(0,8) : [];
+
+    const todayLogs = useMemo(()=>perishLogs.filter(l=>l.date===logDate&&l.loggedByName===user.name),[perishLogs,logDate,user.name]);
+
+    const addEntry = (item) => {
+      if(entries.find(e=>e.iid===item.id))return;
+      setEntries(p=>[...p,{iid:item.id,name:item.name,category:item.category,unit:item.unit,qtyUsed:0,qtyWasted:0,notes:""}]);
+    };
+
+    const submitLogs = async () => {
+      if(entries.length===0)return;
+      let saved=0;
+      for(const e of entries){
+        if(e.qtyUsed===0&&e.qtyWasted===0)continue;
+        const log={id:uid(),iid:e.iid,name:e.name,category:e.category,date:logDate,qtyUsed:e.qtyUsed,qtyWasted:e.qtyWasted,loggedBy:user.id,loggedByName:user.name,notes:e.notes};
+        setPerishLogs(p=>[log,...p]);
+        try{const s=await db.createPerishableLog(log);if(s.id!==log.id)setPerishLogs(p=>p.map(l=>l.id===log.id?{...l,id:s.id}:l));saved++;}catch(err){console.error("[novy]",err.message);}
+      }
+      notify(`${saved} log(s) saved`);
+      setEntries([]);setSearch("");
+    };
+
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3 flex-wrap">
+          <p className="text-sm font-semibold text-gray-700">Veg & Butchery — Usage & Wastage</p>
+          <input type="date" className="border rounded-lg px-2 py-1.5 text-xs" value={logDate} onChange={e=>setLogDate(e.target.value)}/>
+        </div>
+
+        <div className="bg-white rounded-xl border p-4">
+          <div className="relative mb-3">
+            <input type="text" placeholder="Search perishable items..." className="w-full border rounded-lg px-3 py-2 text-sm" value={search} onChange={e=>setSearch(e.target.value)}/>
+            {results.length>0&&(
+              <div className="absolute z-20 w-full mt-1 bg-white border rounded-xl shadow-lg max-h-48 overflow-y-auto">
+                {results.map(item=>{
+                  const added=entries.find(e=>e.iid===item.id);
+                  return (<button key={item.id} onClick={()=>{if(!added)addEntry(item);setSearch("");}} className={`w-full text-left px-4 py-2 flex items-center gap-3 border-b last:border-0 text-sm ${added?"bg-green-50":"hover:bg-orange-50"}`}>
+                    <span className="font-medium flex-1">{item.name}</span><span className="text-gray-400 text-xs">{item.category}</span>
+                  </button>);
+                })}
+              </div>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {Object.keys(perishCats).map(cat=>(
+              <button key={cat} onClick={()=>setActiveCat(activeCat===cat?"":cat)} className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${activeCat===cat?"bg-orange-500 text-white":"bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>
+                {cat}<span className="ml-1 opacity-60">({perishCats[cat].length})</span>
+              </button>
+            ))}
+          </div>
+          {activeCat&&perishCats[activeCat]&&(
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-1.5 mt-2 max-h-44 overflow-y-auto border rounded-lg p-2 bg-gray-50">
+              {perishCats[activeCat].map(item=>{
+                const added=entries.find(e=>e.iid===item.id);
+                return (<button key={item.id} onClick={()=>addEntry(item)} className={`text-left px-3 py-2 rounded-lg text-xs border transition-all ${added?"bg-green-50 border-green-200":"bg-white border-gray-200 hover:border-orange-300 hover:bg-orange-50"}`}>
+                  {item.name}<span className="text-gray-400 ml-1">({item.unit})</span>{added&&<span className="text-green-500 ml-1">✓</span>}
+                </button>);
+              })}
+            </div>
+          )}
+        </div>
+
+        {entries.length>0&&(
+          <div className="bg-white rounded-xl border p-4">
+            <table className="w-full text-xs">
+              <thead className="bg-gray-50"><tr><th className="text-left px-2 py-1">Item</th><th className="px-2 py-1 w-20">Used</th><th className="px-2 py-1 w-20">Wasted</th><th className="px-2 py-1 w-16">Unit</th><th className="px-2 py-1">Notes</th><th className="px-2 py-1 w-8"></th></tr></thead>
+              <tbody>{entries.map((e,i)=>(
+                <tr key={i} className="border-t">
+                  <td className="px-2 py-1 font-medium">{e.name}</td>
+                  <td className="px-2 py-1"><input type="number" min="0" step={qtyStep(e.unit)} className="w-full text-center border rounded px-1 py-1 text-xs" value={e.qtyUsed} onChange={ev=>{const n=[...entries];n[i]={...n[i],qtyUsed:sanitizeQty(+ev.target.value,e.unit)};setEntries(n);}}/></td>
+                  <td className="px-2 py-1"><input type="number" min="0" step={qtyStep(e.unit)} className="w-full text-center border rounded px-1 py-1 text-xs text-red-600" value={e.qtyWasted} onChange={ev=>{const n=[...entries];n[i]={...n[i],qtyWasted:sanitizeQty(+ev.target.value,e.unit)};setEntries(n);}}/></td>
+                  <td className="px-2 py-1 text-center text-gray-500">{e.unit}</td>
+                  <td className="px-2 py-1"><input type="text" className="w-full border rounded px-1 py-1 text-xs" value={e.notes} onChange={ev=>{const n=[...entries];n[i]={...n[i],notes:ev.target.value};setEntries(n);}}/></td>
+                  <td className="px-2 py-1"><button onClick={()=>setEntries(entries.filter((_,j)=>j!==i))} className="text-red-400 hover:text-red-600">×</button></td>
+                </tr>
+              ))}</tbody>
+            </table>
+            <div className="flex justify-end gap-2 mt-3">
+              <Btn v="secondary" s onClick={()=>setEntries([])}>Clear</Btn>
+              <Btn s onClick={submitLogs}>Submit Logs</Btn>
+            </div>
+          </div>
+        )}
+
+        {todayLogs.length>0&&(
+          <div className="bg-white rounded-xl border p-4">
+            <p className="text-xs font-semibold text-gray-600 mb-2">Your logs for {fmt(logDate)}</p>
+            <table className="w-full text-xs">
+              <thead className="bg-gray-50"><tr><th className="text-left px-2 py-1">Item</th><th className="px-2 py-1">Used</th><th className="px-2 py-1">Wasted</th><th className="px-2 py-1">Unit</th></tr></thead>
+              <tbody>{todayLogs.map(l=><tr key={l.id} className="border-t"><td className="px-2 py-1">{l.name}</td><td className="px-2 py-1 text-center">{l.qtyUsed}</td><td className="px-2 py-1 text-center text-red-600">{l.qtyWasted}</td><td className="px-2 py-1 text-center">{iM[l.iid]?.unit||"—"}</td></tr>)}</tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ═════════════════════════════════════════
+  // MANAGER: VEG & BUTCHERY SUMMARY
+  // ═════════════════════════════════════════
+  const MgrPerishables = () => {
+    const [period, setPeriod] = useState("month"); // day, week, month
+    const [dateFrom, setDateFrom] = useState(td().slice(0,8)+"01");
+    const [dateTo, setDateTo] = useState(td());
+    const [fCat, setFCat] = useState("");
+    const [expandedItem, setExpandedItem] = useState(null);
+
+    const logs = useMemo(()=>perishLogs.filter(l=>{
+      if(fCat&&l.category!==fCat)return false;
+      if(dateFrom&&l.date<dateFrom)return false;
+      if(dateTo&&l.date>dateTo)return false;
+      return true;
+    }),[perishLogs,fCat,dateFrom,dateTo]);
+
+    // Aggregate by item
+    const summary = useMemo(()=>{
+      const m={};
+      logs.forEach(l=>{
+        if(!m[l.iid])m[l.iid]={iid:l.iid,name:l.name,category:l.category,totalUsed:0,totalWasted:0,logs:[]};
+        m[l.iid].totalUsed+=l.qtyUsed;
+        m[l.iid].totalWasted+=l.qtyWasted;
+        m[l.iid].logs.push(l);
+      });
+      return Object.values(m).sort((a,b)=>b.totalWasted-a.totalWasted);
+    },[logs]);
+
+    const totalUsed = summary.reduce((s,i)=>s+i.totalUsed,0);
+    const totalWasted = summary.reduce((s,i)=>s+i.totalWasted,0);
+    const wastePct = totalUsed+totalWasted>0?((totalWasted/(totalUsed+totalWasted))*100).toFixed(1):0;
+
+    // Top wasted for chart
+    const topWasted = summary.filter(s=>s.totalWasted>0).slice(0,10).map(s=>({name:s.name.split(" ").slice(0,2).join(" "),wasted:s.totalWasted}));
+
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3 flex-wrap">
+          <p className="text-sm font-semibold text-gray-700">Veg & Butchery Summary</p>
+          <input type="date" className="border rounded-lg px-2 py-1.5 text-xs" value={dateFrom} onChange={e=>setDateFrom(e.target.value)}/>
+          <span className="text-gray-400 text-xs">to</span>
+          <input type="date" className="border rounded-lg px-2 py-1.5 text-xs" value={dateTo} onChange={e=>setDateTo(e.target.value)}/>
+          <select className="border rounded-lg px-2 py-1.5 text-xs" value={fCat} onChange={e=>setFCat(e.target.value)}><option value="">All categories</option>{[...PERISHABLE_CATS].map(c=><option key={c} value={c}>{c}</option>)}</select>
+        </div>
+
+        <div className="grid grid-cols-3 gap-3">
+          <Stat label="Total Used" value={totalUsed.toFixed(1)} accent="blue"/>
+          <Stat label="Total Wasted" value={totalWasted.toFixed(1)} accent="red"/>
+          <Stat label="Wastage %" value={wastePct+"%"} accent={wastePct>10?"red":"green"}/>
+        </div>
+
+        {topWasted.length>0&&(
+          <div className="bg-white rounded-xl border p-4">
+            <p className="text-xs font-semibold text-gray-500 uppercase mb-3">Top Wasted Items</p>
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={topWasted} layout="vertical"><CartesianGrid strokeDasharray="3 3"/><XAxis type="number" tick={{fontSize:10}}/><YAxis type="category" dataKey="name" width={100} tick={{fontSize:10}}/><Tooltip/><Bar dataKey="wasted" fill="#ef4444" radius={[0,4,4,0]}/></BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+
+        <div className="bg-white rounded-xl border overflow-x-auto">
+          <table className="w-full text-xs min-w-[600px]">
+            <thead className="bg-gray-50"><tr><th className="text-left px-3 py-2">Item</th><th className="text-left px-3 py-2">Category</th><th className="text-right px-3 py-2">Used</th><th className="text-right px-3 py-2">Wasted</th><th className="text-right px-3 py-2">Wastage %</th></tr></thead>
+            <tbody>{summary.map(s=>{
+              const wp = s.totalUsed+s.totalWasted>0?((s.totalWasted/(s.totalUsed+s.totalWasted))*100).toFixed(1):0;
+              return (<Fragment key={s.iid}>
+                <tr className="border-t hover:bg-gray-50 cursor-pointer" onClick={()=>setExpandedItem(expandedItem===s.iid?null:s.iid)}>
+                  <td className="px-3 py-2 font-medium">{expandedItem===s.iid?"▾":"▸"} {s.name}</td>
+                  <td className="px-3 py-2 text-gray-500">{s.category}</td>
+                  <td className="px-3 py-2 text-right">{s.totalUsed.toFixed(2)}</td>
+                  <td className="px-3 py-2 text-right text-red-600">{s.totalWasted.toFixed(2)}</td>
+                  <td className={`px-3 py-2 text-right font-bold ${wp>10?"text-red-600":wp>5?"text-amber-600":"text-green-600"}`}>{wp}%</td>
+                </tr>
+                {expandedItem===s.iid&&s.logs.sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map(l=>(
+                  <tr key={l.id} className="bg-gray-50">
+                    <td className="px-3 py-1 pl-8 text-gray-500">{fmt(l.date)}</td>
+                    <td className="px-3 py-1 text-gray-400">{l.loggedByName}</td>
+                    <td className="px-3 py-1 text-right">{l.qtyUsed}</td>
+                    <td className="px-3 py-1 text-right text-red-500">{l.qtyWasted}</td>
+                    <td className="px-3 py-1 text-right text-gray-400">{l.notes||"—"}</td>
+                  </tr>
+                ))}
+              </Fragment>);
+            })}</tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
+
+  // ═════════════════════════════════════════
   // NAVIGATION & RENDER
   // ═════════════════════════════════════════
-  const staffTabs = [{id:"place_order",l:"Place Order"},{id:"receiving",l:"Receiving",b:orders.filter(o=>o.status==="sent_to_vendor"||o.status==="partially_received").length},{id:"setup",l:"Setup"}];
+  const staffTabs = [
+    {id:"place_order",l:"Place Order"},
+    {id:"receiving",l:"Receiving",b:orders.filter(o=>o.status==="sent_to_vendor"||o.status==="partially_received").length},
+    {id:"dry_store",l:"Dry Store"},
+    {id:"perishables",l:"Veg & Butchery"},
+    {id:"setup",l:"Setup"}
+  ];
   const mgrTabs = [
     {id:"mgr_dashboard",l:"Dashboard"},
     {id:"mgr_pos",l:"POs",b:orders.filter(o=>o.status==="draft").length},
     {id:"mgr_grns",l:"GRNs"},
     {id:"mgr_pricing",l:"Pricing",b:grns.filter(g=>{const po=orders.find(o=>o.id===g.poId);return po&&(po.status==="received"||po.status==="partially_received");}).length},
+    {id:"mgr_direct",l:"Direct Orders"},
+    {id:"mgr_drystore",l:"Dry Store"},
+    {id:"mgr_perishables",l:"Veg & Butchery"},
     {id:"mgr_ledger",l:"Vendor Ledger"},
     {id:"mgr_payables",l:"Payables",b:apData.filter(i=>i.overdue).length},
     {id:"mgr_cn",l:"Credit Notes",b:creditNotes.length||0}
@@ -2204,11 +2981,16 @@ export default function App() {
       <div className="max-w-6xl mx-auto px-4 py-5">
         {tab==="place_order"&&!isM&&<PlaceOrder/>}
         {tab==="receiving"&&!isM&&<Receiving/>}
+        {tab==="dry_store"&&!isM&&<StaffDryStore/>}
+        {tab==="perishables"&&!isM&&<StaffPerishables/>}
         {tab==="setup"&&!isM&&<Setup/>}
         {tab==="mgr_dashboard"&&isM&&<MgrDash/>}
         {tab==="mgr_pos"&&isM&&<MgrPOs/>}
         {tab==="mgr_grns"&&isM&&<MgrGRNs/>}
         {tab==="mgr_pricing"&&isM&&<Pricing/>}
+        {tab==="mgr_direct"&&isM&&<DirectOrders/>}
+        {tab==="mgr_drystore"&&isM&&<MgrDryStore/>}
+        {tab==="mgr_perishables"&&isM&&<MgrPerishables/>}
         {tab==="mgr_ledger"&&isM&&<Ledger/>}
         {tab==="mgr_payables"&&isM&&<Payables/>}
         {tab==="mgr_cn"&&isM&&<CreditNotesList/>}
